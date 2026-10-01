@@ -1,0 +1,101 @@
+/**
+ * Typed, validated configuration. Every env var the service reads goes through here, so a
+ * misconfigured deploy fails at boot with a readable list of problems instead of at the first request.
+ */
+import { z } from "zod";
+
+const postgresUrl = z
+  .string()
+  .regex(/^postgres(ql)?:\/\/.+/, "must be a postgres:// or postgresql:// URL");
+
+const intWithDefault = (def: number, min: number, max: number) =>
+  z.coerce.number().int().min(min).max(max).default(def);
+
+const EnvSchema = z.object({
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  PORT: intWithDefault(8080, 1, 65535),
+  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+
+  DATABASE_URL: postgresUrl,
+  DATABASE_URL_SESSION: postgresUrl.optional(),
+  DB_POOL_MAX: intWithDefault(20, 1, 200),
+
+  JWT_SECRET: z.string().min(32, "must be at least 32 characters"),
+  ADMIN_API_KEY: z.string().min(16, "must be at least 16 characters"),
+  AUTH_DEMO_LOGIN: z.stringbool().default(true),
+
+  DEFAULT_PER_USER_LIMIT: intWithDefault(4, 1, 100),
+  MAX_SEATS_PER_SHOW: intWithDefault(20_000, 1, 200_000),
+  HOLD_SWEEP_INTERVAL_MS: intWithDefault(1_000, 100, 60_000),
+  MAX_QUEUE: intWithDefault(20_000, 1, 1_000_000),
+});
+
+export type Config = {
+  nodeEnv: "development" | "test" | "production";
+  port: number;
+  logLevel: z.infer<typeof EnvSchema>["LOG_LEVEL"];
+  db: { url: string; migrationUrl: string; poolMax: number };
+  auth: { jwtSecret: string; adminApiKey: string; demoLogin: boolean };
+  reservations: {
+    defaultPerUserLimit: number;
+    maxSeatsPerShow: number;
+    holdSweepIntervalMs: number;
+  };
+  admission: { maxQueue: number };
+};
+
+export class ConfigError extends Error {
+  constructor(public readonly issues: string[]) {
+    super(`Invalid configuration:\n  - ${issues.join("\n  - ")}`);
+    this.name = "ConfigError";
+  }
+}
+
+function formatIssues(error: z.ZodError): string[] {
+  return error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const parsed = EnvSchema.safeParse(env);
+  if (!parsed.success) throw new ConfigError(formatIssues(parsed.error));
+  const e = parsed.data;
+  return {
+    nodeEnv: e.NODE_ENV,
+    port: e.PORT,
+    logLevel: e.LOG_LEVEL,
+    db: {
+      url: e.DATABASE_URL,
+      migrationUrl: e.DATABASE_URL_SESSION ?? e.DATABASE_URL,
+      poolMax: e.DB_POOL_MAX,
+    },
+    auth: {
+      jwtSecret: e.JWT_SECRET,
+      adminApiKey: e.ADMIN_API_KEY,
+      demoLogin: e.AUTH_DEMO_LOGIN,
+    },
+    reservations: {
+      defaultPerUserLimit: e.DEFAULT_PER_USER_LIMIT,
+      maxSeatsPerShow: e.MAX_SEATS_PER_SHOW,
+      holdSweepIntervalMs: e.HOLD_SWEEP_INTERVAL_MS,
+    },
+    admission: { maxQueue: e.MAX_QUEUE },
+  };
+}
+
+/** Just the migration URL — for tooling (migrate CLI) that must not require auth secrets. */
+export function loadMigrationUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const parsed = z
+    .object({ DATABASE_URL: postgresUrl, DATABASE_URL_SESSION: postgresUrl.optional() })
+    .safeParse(env);
+  if (!parsed.success) throw new ConfigError(formatIssues(parsed.error));
+  return parsed.data.DATABASE_URL_SESSION ?? parsed.data.DATABASE_URL;
+}
+
+/** Loads ./.env into process.env when present (Node's built-in loader; real env vars win). */
+export function loadDotEnv(path = ".env"): void {
+  try {
+    process.loadEnvFile(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
