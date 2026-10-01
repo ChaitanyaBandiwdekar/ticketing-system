@@ -1,0 +1,5 @@
+# LF everywhere so shell scripts, SQL and the Docker build behave the same on Windows and Linux.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

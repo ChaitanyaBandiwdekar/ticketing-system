@@ -1,0 +1,24 @@
+# deps & builds
+node_modules/
+dist/
+web/dist/
+coverage/
+*.tsbuildinfo
+
+# local env — real secrets never committed (see .env.example)
+.env
+.env.*
+!.env.example
+
+# embedded-postgres clusters used by the test harness
+.pg/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# tool caches
+.impeccable/

@@ -1,0 +1,37 @@
+{
+  "name": "firstdayfirstshow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FirstDayFirstShow (FDFS) — seat reservation that stays correct under an on-sale stampede.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "tsx server/src/db/migrate-cli.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.12.5",
+    "pino": "^10.3.1",
+    "postgres": "^3.4.9",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.4",
+    "embedded-postgres": "17.10.0-beta.17",
+    "eslint": "^10.11.0",
+    "fast-check": "^4.10.2",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9",
+    "typescript-eslint": "^8.71.0",
+    "vitest": "^4.1.11"
+  }
+}
