@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import type { Sql } from "../db/pool";
 import { withContentionRetry, type RetryOptions } from "../db/retry";
 import type { ReserveOutcome } from "./types";
+import { isUuid } from "./ids";
 
 export type ReserveInput = {
   showId: string;
@@ -19,7 +20,6 @@ export type ReserveInput = {
 const MAX_SEATS_PER_REQUEST = 100;
 const MAX_KEY_LENGTH = 200;
 const MAX_USER_ID_LENGTH = 128;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Fingerprint of what the request asks for. Seats are a set: the same seats in a different
@@ -38,7 +38,7 @@ function validate(input: ReserveInput): ReserveOutcome | null {
     message,
     unknown_seats: [],
   });
-  if (!UUID.test(input.showId)) return { outcome: "show_not_found", path: "fast" };
+  if (!isUuid(input.showId)) return { outcome: "show_not_found", path: "fast" };
   // The token layer guarantees this, so a violation is a programming error: fail loudly here
   // rather than half-way through the SQL function on a CHECK constraint.
   if (input.userId.length === 0 || input.userId.length > MAX_USER_ID_LENGTH) {

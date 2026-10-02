@@ -65,3 +65,32 @@ export type ShowSnapshot = {
   seats: { label: string; status: SeatStatus }[];
   counts: SeatCounts;
 };
+
+export type LifecycleOutcome =
+  /** changed=false: an idempotent repeat (already confirmed / already cancelled). */
+  | { outcome: "confirmed" | "cancelled"; changed: boolean; reservation: Reservation }
+  | {
+      outcome: "reservation_expired" | "reservation_cancelled";
+      changed: false;
+      reservation: Reservation;
+    }
+  | { outcome: "not_found" }
+  | { outcome: "forbidden" };
+
+export type ExpireHoldsResult = {
+  /** Seats returned to "available", grouped by show (feeds realtime deltas). */
+  released: { show_id: string; seats: string[] }[];
+  /** Reservations finalized as "expired". */
+  expired: number;
+};
+
+export type AuditCheck =
+  "seat_count" | "counts" | "orphan_seat" | "missing_seats" | "amount" | "per_user_limit";
+
+export type AuditReport = {
+  show_id: string;
+  ok: boolean;
+  counts: SeatCounts;
+  /** Capped at 100. */
+  violations: { check: AuditCheck; detail: string }[];
+};

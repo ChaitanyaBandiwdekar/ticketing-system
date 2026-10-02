@@ -99,3 +99,20 @@ export async function invariantViolations(sql: Sql, showId: string): Promise<str
   violations.push(...rows.map((r) => r.problem));
   return violations;
 }
+
+/**
+ * Rewinds a hold's deadline into the past instead of sleeping through its TTL. Locks seats in id
+ * order, then the reservation (the engine's lock order), so it is safe to run amid concurrent calls.
+ */
+export async function lapse(sql: Sql, reservationId: string): Promise<void> {
+  await sql.begin(async (tx) => {
+    await tx`
+      update seats set held_until = now() - interval '1 second'
+       where id in (select id from seats
+                     where reservation_id = ${reservationId}::uuid and status = 'held'
+                     order by id for update)`;
+    await tx`
+      update reservations set expires_at = now() - interval '1 second'
+       where id = ${reservationId}::uuid and status = 'held'`;
+  });
+}
