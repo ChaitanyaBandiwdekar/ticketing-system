@@ -6,7 +6,7 @@ Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its check
 | ----- | --------------------------------------- | -------------- |
 | 0     | Foundation                              | ✅ done        |
 | 1     | Core engine I: atomic reserve           | ✅ done        |
-| 2     | Core engine II: lifecycle + audit       | ⬜ not started |
+| 2     | Core engine II: lifecycle + audit       | ✅ done        |
 | 3     | API service                             | ⬜ not started |
 | 3b    | Smoke deploy (Render free + Supabase)   | ⬜ not started |
 | 4     | Realtime layer (SSE, jobs)              | ⬜ not started |
@@ -110,3 +110,44 @@ Checked against Stripe/brandur idempotency keys, the IETF Idempotency-Key draft,
 - None. Pushed to https://github.com/ChaitanyaBandiwdekar/ticketing-system.
 
 **Commits:** see `git log`. Phase 1 is a feature commit, a docs commit, and a review-hardening commit.
+
+---
+
+## Phase 2: Core engine II (lifecycle + audit) ✅
+
+**Deliverables**
+
+- [x] `db/migrations/0003_lifecycle_fns.sql`:
+  - `fdfs_confirm` and `fdfs_cancel`: a lock-free pre-check (not_found / forbidden / already final), then lock seats `WHERE reservation_id ORDER BY id FOR UPDATE` → the reservation row, then re-decide under the locks. Every seat write is guarded by `reservation_id = <this reservation>`. Both are idempotent: a repeat gives `changed: false`.
+  - `fdfs_expire_holds`: a seat-based sweeper. Pass 1 releases lapsed held seats; pass 2 marks lapsed holds `expired`. It uses `SKIP LOCKED` throughout and never waits, and it returns the released seats per show for realtime deltas.
+  - A partial index on `seats (held_until) WHERE status='held'`.
+- [x] `db/migrations/0004_audit_fn.sql`: `fdfs_audit(show)` is one statement (one snapshot) over effective states. Checks: seat_count, counts, orphan_seat (taken seat → active reservation of the same user, state, and seat), missing_seats, amount, per_user_limit. Returns `{ok, counts, violations[]}`.
+- [x] `server/src/engine/lifecycle.ts`: `confirm`, `cancel`, `expireHolds`, `listReservations` (newest first, optional show filter, effective statuses). `server/src/engine/audit.ts`: `audit`. `server/src/engine/ids.ts`: a shared `isUuid` guard. Typed outcomes are in `types.ts`.
+- [x] `test/helpers/engine.ts`: `lapse()` rewinds a hold's deadline. It locks in engine order, so it is safe amid concurrent calls.
+
+**Verification**
+
+- `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅
+- `npm test` ✅: 8 files, 80 tests, ~40s locally
+  - A's hold lapses → B takes over a seat → A's late confirm and cancel both give `reservation_expired`. The sweeper releases only A's untaken seat, and B's seats and booking are untouched.
+  - confirm vs cancel raced on 60 holds → cancel always wins the final state (confirm either ran first or got `reservation_cancelled`). All seats are free and there were 0 retries.
+  - 25 rounds of takeovers + cancel + late confirm + sweeper + crossing pair reserves, all concurrent → 0 deadlock retries, audit green every round.
+  - fast-check: 12 randomized scenarios of concurrent reserve/confirm/cancel/sweep batches (owner and intruder) with **real 1s hold expiry** and pauses. After every batch, `audit()`, the independent test oracle, and the snapshot counts all agree. Each final reservation status matches what the calls reported, and there were 0 retries.
+  - lifecycle unit tests (16):
+    - confirm/cancel happy paths, idempotency, and forbidden/not_found
+    - lapsed and cancelled cases
+    - sweeper grouping per show, and that it skips locked seats without waiting
+    - audit counts and corruption detection
+    - listReservations
+- CI ✅ green on GitHub for the Phase 1 push (Phase 2 runs on this push)
+
+**Deviations from plan** (Plan.md updated accordingly)
+
+- Confirm is idempotent (`changed: false` on repeat), and confirming a cancelled reservation is a new 409 `reservation_cancelled`.
+- The sweeper is seat-based rather than reservation-based, so a seat skipped under `SKIP LOCKED` (or left pointing at an already-finalized hold) is always picked up on a later tick.
+
+**Open items / needs you**
+
+- None for this phase. Phase 3b will need the Supabase project and a Render account.
+
+**Commits:** see `git log`. Phase 2 is a feature commit and a docs commit.

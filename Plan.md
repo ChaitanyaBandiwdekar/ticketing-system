@@ -104,10 +104,11 @@ Every function acquires locks in this order. `ORDER BY seats.id`, an integer, is
 
 **`confirm` / `cancel` / `expire_holds`:**
 
-- **Lock order:** `confirm` and `cancel` lock the seats `WHERE reservation_id=$r ORDER BY id FOR UPDATE` first, then the reservation row. The sweeper uses the same order with `SKIP LOCKED` batches.
+- **Lock order:** `confirm` and `cancel` lock the seats `WHERE reservation_id=$r ORDER BY id FOR UPDATE` first, then the reservation row. Both decide first from a lock-free read (unknown, foreign, or already-final reservations never lock anything), then re-decide under the locks. The sweeper uses the same order with `SKIP LOCKED` batches and never waits on a request. It is **seat-based**: pass 1 releases lapsed held seats, pass 2 marks lapsed holds `expired`. A seat skipped this tick, or still pointing at an already-finalized hold, is picked up on the next tick. It returns the released seats per show for realtime deltas.
 - **Guarded updates:** every release is conditioned on `reservation_id=$r AND status=<expected>`. A late cancel or confirm of an expired hold therefore matches zero seats that were re-sold to someone else, so nothing is resurrected.
 - **Confirm:** requires `held_until > now()` and that all n seats still belong to the reservation.
 - **Cancel:** idempotent (a second cancel → 200 with the same body). Cancelling an expired hold → 409 `reservation_expired`. A non-owner → 403.
+- **Confirm** is idempotent too (confirming a confirmed reservation → 200, `changed:false`). Confirming a cancelled one → 409 `reservation_cancelled`.
 - **Time:** only DB `now()` is used, never app time.
 
 **Invariant:** one row per seat with one NOT NULL status, and seats are never inserted or deleted after creation. That makes `available+held+confirmed == total` true by construction. `GET /shows/:id` derives the per-seat list _and_ the counts from **one query**, applying effective expiry, so both come from one snapshot and always reconcile.
@@ -189,7 +190,7 @@ Plus the classics, all covered:
 - **Reserve:** `POST /shows/:id/reserve` with `{seats, idempotency_key}` or the `Idempotency-Key` header. The key is required; a header/body mismatch → 400. Returns 201 `{reservation_id, show_id, user_id, seats, amount_paise, status, expires_at?}`.
 - **Lifecycle:** `POST /reservations/:id/confirm` (hold mode), `POST /reservations/:id/cancel` (owner only), `GET /me/reservations?show_id=`.
 - **Reads:** `GET /shows`; `GET /shows/:id` (seats + `{total, available, held, confirmed, invariant_ok}`); `GET /shows/:id/audit`.
-- **Status codes:** 201 created · 200 idempotent replay · 400 validation (incl. missing `Idempotency-Key`) · 401 bad/missing token · 403 not owner/admin · 404 unknown show/reservation · 409 domain decline (`seat_taken`, `per_user_limit`, `reservation_expired`) · 422 `idempotency_key_reused` · 429 only on extreme overload · 503 DB unreachable or contention.
+- **Status codes:** 201 created · 200 idempotent replay · 400 validation (incl. missing `Idempotency-Key`) · 401 bad/missing token · 403 not owner/admin · 404 unknown show/reservation · 409 domain decline (`seat_taken`, `per_user_limit`, `reservation_expired`, `reservation_cancelled`) · 422 `idempotency_key_reused` · 429 only on extreme overload · 503 DB unreachable or contention.
 - **Error shape:** `{error:{code,message,request_id,...}}`.
 - **Health & metrics:** `GET /healthz` (liveness), `GET /readyz` (dedicated DB check, fails closed), `GET /metrics`.
 

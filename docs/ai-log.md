@@ -56,3 +56,15 @@ Production still runs Node 22 in Docker.
 **Human:** directed the phase to start ("continue") and asked for trivial work to be delegated to Sonnet subagents.
 
 **Review (human-directed):** before building on the core, the human asked for it to be checked against industry practice. The AI researched Stripe/brandur idempotency keys, the IETF Idempotency-Key draft, the Ticketmaster hold design, and Postgres advisory-lock and MultiXact pitfalls, then compared them with the implementation. It found and fixed a hot-parent FK lock on the show row, proved first by a failing regression test. Status codes were aligned with the IETF draft (422 for key reuse), and two deviations were kept and documented, with reasons.
+
+## Phase 2: Core engine II (lifecycle + audit)
+
+**AI implemented:** the confirm/cancel/sweeper/audit SQL functions, the TS wrappers, the race tests, and the real-expiry randomized stress test. The routine lifecycle unit tests (16) and these doc updates were delegated to a smaller model (Claude Sonnet) subagent and reviewed.
+
+**Decisions made during the phase:**
+
+- Confirm is idempotent (`changed: false` on repeat), and confirming a cancelled reservation is a new 409 `reservation_cancelled`.
+- The sweeper is seat-based rather than reservation-based, so a seat skipped under `SKIP LOCKED` (or left pointing at an already-finalized hold) is picked up on a later tick.
+- Confirm and cancel decide lock-free first, then re-decide under the locks.
+
+**Human:** said to commit, push and continue after the Phase 1 industry review.
