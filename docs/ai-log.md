@@ -41,3 +41,16 @@ An honest, per-phase record of how AI (Claude Code) was used. It separates what 
 - TypeScript 5.9 instead of 7, which typescript-eslint doesn't support yet.
 
 Production still runs Node 22 in Docker.
+
+## Phase 1: Core engine I (atomic reserve)
+
+**AI implemented:** the schema and constraints, `fdfs_reserve()` and its fast path, the TS wrapper and retry helper, show creation/snapshot, the concurrency suite, the fast-check stress test with an outcome model, and the invariant oracle. Routine test writing (show validation/snapshot tests) and these doc updates were delegated to a smaller model (Claude Sonnet) subagent and reviewed.
+
+**Decisions made during the phase:**
+
+- Declines are returned as jsonb instead of raised, and a locked-path decline deletes the key row it claimed.
+- The fast path also checks the per-user limit from the snapshot, so a greedy user never takes the advisory lock.
+- Every outcome reports `path: fast|locked`, for tests now and metrics later.
+- Composite FK (seat → reservation of the same show and user) instead of the plain `reservation_id` FK in the plan.
+
+**Human:** directed the phase to start ("continue") and asked for trivial work to be delegated to Sonnet subagents.

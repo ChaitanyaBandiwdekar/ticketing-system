@@ -72,7 +72,7 @@ There is **no users table**: identity is the JWT `sub`, so minting tokens costs 
 - `CHECK ((status='available') = (reservation_id IS NULL AND user_id IS NULL))`
 - `CHECK (status<>'held' OR held_until IS NOT NULL)`
 - `price_paise > 0`, and every amount is a `bigint`
-- The `seats.reservation_id` FK
+- The composite FK `seats (reservation_id, show_id, user_id) → reservations (id, show_id, user_id)`: a taken seat can only point at a reservation of its own show **and** its own user
 
 **Global lock order (the deadlock-freedom argument):**
 idempotency key → per-(show,user) advisory lock → **seat rows sorted by `seats.id`** → reservation rows.
@@ -83,8 +83,11 @@ Every function acquires locks in this order. `ORDER BY seats.id`, an integer, is
 1. **Snapshot fast path, no locks.** One statement reads the user's idempotency row _and_ the requested seats' effective states in the **same snapshot**:
    - Key present with the same hash → **replay** (200 + `Idempotent-Replayed: true`, original body with its current status).
    - Key present with a different hash → **409 `idempotency_key_reused`**.
-   - Any seat taken → **409 `seat_taken`** with `unavailable_seats`.
    - Unknown labels → 400.
+   - The user's active seats + n > limit → **409 `per_user_limit`** (checked before seats, as on the locked path).
+   - Any seat taken → **409 `seat_taken`** with `unavailable_seats`.
+
+   A decline from the snapshot is linearizable: at that instant the seat really was taken / the user really held that many seats.
 
    This step keeps a 500-way hot-seat storm from parking every pool connection on A12's row lock: after the first commit, losers decline without locking anything. Reading key and seats in one snapshot means a concurrent same-key retry can never observe "seat taken by my own original" without also seeing the key.
 
@@ -95,7 +98,8 @@ Every function acquires locks in this order. `ORDER BY seats.id`, an integer, is
 **Notes:**
 
 - `reserve` **never touches another user's reservation row**. A takeover of an expired hold only rewrites the seat, and the old reservation becomes "expired" by derivation (`status='held' AND expires_at<now()`); the sweeper finalizes it later. This removes a real deadlock: reserve (seat → old reservation) against cancel (reservation → seat).
-- Declines raise and roll back, so **only successes consume a key**, and a retry after a decline is re-evaluated (documented).
+- Declines are **returned, not raised** (no exception churn or Postgres ERROR log lines in a stampede). A locked-path decline deletes the key row it claimed in the same transaction, so **only successes consume a key**, and a retry after a decline is re-evaluated (documented).
+- Every outcome carries `path: fast|locked`, so tests (and later metrics) can prove that hot-seat losers decline lock-free.
 - The function sets `lock_timeout='10s'`. The app retries 40P01/40001/55P03 a bounded number of times and never surfaces a 500 for contention.
 
 **`confirm` / `cancel` / `expire_holds`:**
