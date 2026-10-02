@@ -7,7 +7,7 @@ Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its check
 | 0     | Foundation                              | ✅ done        |
 | 1     | Core engine I: atomic reserve           | ✅ done        |
 | 2     | Core engine II: lifecycle + audit       | ✅ done        |
-| 3     | API service                             | ⬜ not started |
+| 3     | API service                             | ✅ done        |
 | 3b    | Smoke deploy (Render free + Supabase)   | ⬜ not started |
 | 4     | Realtime layer (SSE, jobs)              | ⬜ not started |
 | 5     | UI I: shell + shows                     | ⬜ not started |
@@ -151,3 +151,57 @@ Checked against Stripe/brandur idempotency keys, the IETF Idempotency-Key draft,
 - None for this phase. Phase 3b will need the Supabase project and a Render account.
 
 **Commits:** see `git log`. Phase 2 is a feature commit and a docs commit.
+
+---
+
+## Phase 3: API service ✅
+
+**Deliverables**
+
+- [x] `server/src/http/app.ts`: Fastify app factory.
+  - request id: a sane incoming `x-request-id` is kept, anything else is replaced; it is echoed on every response, error body and log line
+  - admission control (429 + Retry-After past `MAX_QUEUE` in flight; ops routes bypass it)
+  - one enriched log line per request via `LogController` + `onResponse`
+  - one error shape for every response, and `keepAliveTimeout` 65s / `headersTimeout` 66s
+- [x] `server/src/http/errors.ts`: the `{error:{code,message,request_id,...}}` model. Contention → 503 `contention`; connection failures and SQLSTATE 08/53/57P01-03 → 503 `db_unavailable` (with Retry-After); only genuine bugs → 500, with no message leak.
+- [x] `server/src/http/auth.ts`: HS256 JWTs via fast-jwt (algorithm pinned, issuer checked, 20k-entry verified-token LRU cache), identity only from `sub`, and a constant-time admin key check. Auth runs in `onRequest`, before body validation (no credentials → 401, never a 400).
+- [x] Routes at the spec's paths:
+  - `/auth/login`, `/auth/tokens` (batch mint ≤ 10k)
+  - `POST /shows` (admin), `GET /shows`, `GET /shows/:id` (one-snapshot seat map with a 250 ms micro-cache), `GET /shows/:id/audit`
+  - `POST /shows/:id/reserve` (`Idempotency-Key` header or body field; a mismatch → 400; replay → 200 + `Idempotent-Replayed: true`; key reuse → 422; spoofed body `user_id` ignored and logged as `identity_spoof_ignored`)
+  - `POST /reservations/:id/confirm|cancel`, `GET /me/reservations`
+- [x] `server/src/http/readiness.ts`: `/readyz` on a dedicated 1-connection pool, single-flight, cached 1s, 2s timeout, fails closed, and 503 while draining. `/healthz` does no I/O.
+- [x] `server/src/main.ts`: migrate (retrying while the DB comes up) → listen. On SIGTERM: readiness 503 → Fastify close (in-flight requests finish) → pools drain, with a 25s watchdog.
+- [x] Container: a multi-stage `Dockerfile` (node:22-alpine, esbuild bundle, prod deps only, tini as PID 1, non-root, heap capped at 384 MB). `docker-compose.yml` runs Postgres 17 + **PgBouncer 1.25 in transaction mode** + the app; migrations go direct, like Supabase's session pooler.
+- [x] `scripts/smoke.sh` (reusable against compose, CI or the live URL) and `scripts/ci/fail-closed.sh`. A CI `compose` job builds the image, starts the stack, smoke-tests through PgBouncer, stops the DB (expects `/healthz` 200, `/readyz` 503 and reserve 503 `db_unavailable`), restarts it (expects recovery), smoke-tests again, and checks that SIGTERM gives exit code 0.
+- [x] `npm run dev | build | start`; README now documents the Docker stack, the API table and the status codes.
+
+**Verification**
+
+- `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅
+- `npm test` ✅: 15 files, 165 tests, ~45s locally
+  - Reserve contract (15):
+    - 201 body shape; replay 200 with the identical body + header
+    - key via body; header/body mismatch 400; missing key 400; key reuse 422
+    - spoofed `user_id` ignored; 409 `seat_taken` with `unavailable_seats` and `request_id`; 409 `per_user_limit` with the numbers
+    - unknown seats 400; unknown or malformed show 404; 401 before body validation (the admin key is not a user identity)
+    - a 60-user stampede through HTTP gives 1×201 + 59×409, and the audit is ok
+    - confirm/cancel replay headers; foreign cancel 403; lapsed hold 409
+  - Auth (15): forged secret, `alg:none`, expired, wrong issuer and bad `sub` → 401; batch mint bounds
+  - Shows (14), platform (11: health, request-id rules, 404 shape, malformed JSON 400, 413, 415), error mapping (18), admission (4), readiness (8)
+- The production bundle (`npm run build`) was booted locally against an embedded Postgres, and `scripts/smoke.sh` passed end to end. It confirmed one log line per request carrying outcome and decision path, the spoof warning, and that re-running migrations is a no-op.
+- CI: the Docker/compose job runs on this push (there is no Docker on the dev machine, so CI is its first real run).
+
+**Deviations from plan**
+
+- fast-jwt rather than a hand-rolled HS256, for its built-in verified-token cache (the plan's "LRU cache of verified JWTs").
+- An esbuild bundle instead of a `tsc` emit: the source uses extensionless ESM imports; the bundle is ~40 KB.
+- Fastify 5.12 deprecates the top-level `disableRequestLogging`/`requestIdLogLabel`, so `LogController` is used.
+- Fastify's default Ajv type coercion is kept (e.g. `"4"` → 4, a single string → a one-item array). It is harmless here because identity never comes from the body and every value is re-validated by the engine.
+- The `text/plain` body gets a 400 (Fastify parses it, then the schema rejects it); 415 is for media types with no parser.
+
+**Open items / needs you**
+
+- **Phase 3b (smoke deploy) needs you:** create the Supabase project (Singapore) and share the pooler URLs (transaction :6543 and session :5432) and the DB password via `.env`/Render only; create a Render account and connect the GitHub repo. I'll add `render.yaml`.
+
+**Commits:** see `git log`. Phase 3 is a feature commit and a docs commit.

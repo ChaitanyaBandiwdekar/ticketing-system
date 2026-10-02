@@ -68,3 +68,17 @@ Production still runs Node 22 in Docker.
 - Confirm and cancel decide lock-free first, then re-decide under the locks.
 
 **Human:** said to commit, push and continue after the Phase 1 industry review.
+
+## Phase 3: API service
+
+**AI implemented:** the Fastify app, error model, auth, admission, readiness, routes, main/drain, Dockerfile, compose, smoke/fail-closed scripts, the CI compose job, and the reserve-contract API tests. It checked the current Fastify 5.12 and fast-jwt APIs against the docs (Context7) before using them, and the PgBouncer image's env contract against its entrypoint script. The auth/shows/platform API tests and the error/admission/readiness unit tests (69 tests) were delegated to a smaller model (Claude Sonnet) subagent and reviewed. It flagged that `toApiError(null)` could crash the error handler, and that was fixed with a test.
+
+**Decisions made during the phase:**
+
+- fast-jwt rather than a hand-rolled HS256, for its built-in verified-token cache.
+- An esbuild bundle instead of a `tsc` emit, because the source uses extensionless ESM imports.
+- `LogController` instead of Fastify 5.12's deprecated top-level `disableRequestLogging`/`requestIdLogLabel`.
+- Fastify's default Ajv type coercion is kept, since identity never comes from the body and the engine re-validates every value.
+- A `text/plain` body gets a 400 (the schema rejects it); 415 is for media types with no parser.
+
+**Human:** said "continue" after Phase 2.
