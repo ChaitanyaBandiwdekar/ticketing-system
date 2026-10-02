@@ -8,6 +8,9 @@
     "node": ">=20.19"
   },
   "scripts": {
+    "dev": "tsx watch server/src/main.ts",
+    "build": "esbuild server/src/main.ts --bundle --platform=node --format=esm --target=node22 --packages=external --sourcemap --outfile=dist/server.js",
+    "start": "node --enable-source-maps dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write .",
@@ -17,6 +20,7 @@
     "db:migrate": "tsx server/src/db/migrate-cli.ts"
   },
   "dependencies": {
+    "fast-jwt": "^6.3.3",
     "fastify": "^5.12.5",
     "pino": "^10.3.1",
     "postgres": "^3.4.9",
@@ -26,6 +30,7 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.4",
     "embedded-postgres": "17.10.0-beta.17",
+    "esbuild": "^0.28.2",
     "eslint": "^10.11.0",
     "fast-check": "^4.10.2",
     "prettier": "^3.9.9",

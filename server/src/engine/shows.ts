@@ -1,6 +1,7 @@
 /** Show creation and the one-snapshot read that the seat map and the invariant badge rely on. */
 import type { Sql } from "../db/pool";
-import type { SeatStatus, Show, ShowSnapshot } from "./types";
+import { isUuid } from "./ids";
+import type { SeatCounts, SeatStatus, Show, ShowSnapshot } from "./types";
 
 export type CreateShowInput = {
   name: string;
@@ -91,6 +92,7 @@ export async function createShow(
  * list and the counts come from the same snapshot and always reconcile with each other.
  */
 export async function getShowSnapshot(sql: Sql, showId: string): Promise<ShowSnapshot | null> {
+  if (!isUuid(showId)) return null;
   const [row] = await sql.unsafe<
     (Show & { seat_list: { label: string; status: SeatStatus }[] | null })[]
   >(
@@ -121,6 +123,40 @@ export async function getShowSnapshot(sql: Sql, showId: string): Promise<ShowSna
         counts.available + counts.held + counts.confirmed === show.total_seats,
     },
   };
+}
+
+export type ShowSummary = Show & { counts: SeatCounts };
+
+/** Newest shows first, each with its effective counts (one statement, one snapshot). */
+export async function listShows(
+  sql: Sql,
+  opts: { includeEphemeral?: boolean; limit?: number } = {},
+): Promise<ShowSummary[]> {
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const rows = await sql.unsafe<(Show & { available: number; held: number; confirmed: number })[]>(
+    `select ${SHOW_COLUMNS}, c.available, c.held, c.confirmed
+       from shows
+       cross join lateral (
+         select count(*) filter (where fdfs_seat_free(s.status, s.held_until))::int as available,
+                count(*) filter (where s.status = 'held'
+                                   and not fdfs_seat_free(s.status, s.held_until))::int as held,
+                count(*) filter (where s.status = 'confirmed')::int as confirmed
+           from seats s where s.show_id = shows.id) c
+      where $1::boolean or not ephemeral
+      order by created_at desc, id
+      limit $2`,
+    [opts.includeEphemeral ?? false, limit],
+  );
+  return rows.map(({ available, held, confirmed, ...show }) => ({
+    ...normalizeShow(show),
+    counts: {
+      total: show.total_seats,
+      available,
+      held,
+      confirmed,
+      invariant_ok: available + held + confirmed === show.total_seats,
+    },
+  }));
 }
 
 function normalizeShow(show: Show): Show {

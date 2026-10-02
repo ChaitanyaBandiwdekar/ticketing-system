@@ -1,0 +1,53 @@
+# Local / CI stack that mirrors production's shape:
+#   app --(transaction pooling)--> PgBouncer :6432 --> Postgres 17   (Supabase: Supavisor :6543)
+#   app --(migrations, session)----------------------> Postgres 17   (Supabase: session pooler :5432)
+# The secrets below are throwaway LOCAL defaults so `docker compose up` just works; real values
+# come from the environment (.env) and never from this file in production.
+name: fdfs
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fdfs
+    command: ["postgres", "-c", "max_connections=200"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fdfs"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports: ["${DB_PORT:-5433}:5432"]
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    environment:
+      DB_HOST: db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: fdfs
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      LISTEN_PORT: "6432"
+      MAX_CLIENT_CONN: "500"
+      DEFAULT_POOL_SIZE: "20"
+    depends_on:
+      db: { condition: service_healthy }
+
+  app:
+    build: .
+    image: fdfs:local
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@pgbouncer:6432/fdfs
+      DATABASE_URL_SESSION: postgres://postgres:postgres@db:5432/fdfs
+      DB_POOL_MAX: "20"
+      JWT_SECRET: ${JWT_SECRET:-local-dev-jwt-secret-change-me-0123456789}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-local-dev-admin-key}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      db: { condition: service_healthy }
+      # Pool connections are opened lazily, and migrations go straight to db, so "started" is enough.
+      pgbouncer: { condition: service_started }
+    ports: ["${APP_PORT:-8080}:8080"]
+    stop_grace_period: 30s

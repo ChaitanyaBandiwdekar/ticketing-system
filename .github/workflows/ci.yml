@@ -39,3 +39,32 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
+  compose:
+    name: docker image · compose stack (PgBouncer transaction mode) · smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ADMIN_API_KEY: ci-admin-key-0123456789
+      JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build image
+        run: docker compose build app
+      - name: Start stack (Postgres 17 + PgBouncer + app)
+        run: docker compose up -d --wait --wait-timeout 180
+      - name: Smoke test through PgBouncer
+        run: scripts/smoke.sh http://localhost:8080 "$ADMIN_API_KEY"
+      - name: Fail closed when the database disappears, recover when it returns
+        run: scripts/ci/fail-closed.sh http://localhost:8080
+      - name: Smoke again after recovery
+        run: scripts/smoke.sh http://localhost:8080 "$ADMIN_API_KEY"
+      - name: Graceful drain on SIGTERM (exit code 0)
+        run: |
+          docker compose stop -t 30 app
+          code="$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -aq app)")"
+          echo "app exit code: $code"
+          test "$code" = "0"
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color --tail 300

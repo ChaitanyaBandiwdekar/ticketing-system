@@ -1,0 +1,13 @@
+node_modules
+dist
+web/dist
+coverage
+.pg
+.git
+.github
+.env
+.env.*
+!.env.example
+*.log
+test
+docs

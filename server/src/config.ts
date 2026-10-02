@@ -28,6 +28,7 @@ const EnvSchema = z.object({
   MAX_SEATS_PER_SHOW: intWithDefault(20_000, 1, 200_000),
   HOLD_SWEEP_INTERVAL_MS: intWithDefault(1_000, 100, 60_000),
   MAX_QUEUE: intWithDefault(20_000, 1, 1_000_000),
+  SNAPSHOT_CACHE_MS: intWithDefault(250, 0, 10_000),
 });
 
 export type Config = {
@@ -42,6 +43,8 @@ export type Config = {
     holdSweepIntervalMs: number;
   };
   admission: { maxQueue: number };
+  /** GET /shows/:id micro-cache: one serialized snapshot per show for this long (0 = off). */
+  http: { snapshotCacheMs: number };
 };
 
 export class ConfigError extends Error {
@@ -79,6 +82,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       holdSweepIntervalMs: e.HOLD_SWEEP_INTERVAL_MS,
     },
     admission: { maxQueue: e.MAX_QUEUE },
+    http: { snapshotCacheMs: e.SNAPSHOT_CACHE_MS },
   };
 }
 
