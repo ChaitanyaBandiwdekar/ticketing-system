@@ -272,3 +272,20 @@ describe("invariant oracle", () => {
     expect(problems.join("\n")).toMatch(/holds 3 seats over limit 2/);
   });
 });
+
+describe("reserve: lock footprint", () => {
+  it("never locks the show row (no hot-parent FK lock, so no MultiXact churn on a hot show)", async () => {
+    const show = await makeShow(sql);
+    // FOR UPDATE on the show conflicts with the FOR KEY SHARE that a child-row FK check takes.
+    // If reserve() touched the show row at all, it would block behind this transaction.
+    const blocker = sql.begin(async (tx) => {
+      await tx`select 1 from shows where id = ${show.id}::uuid for update`;
+      await tx`select pg_sleep(3)`;
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    const started = Date.now();
+    created(await book(sql, show.id, uniq("u"), ["A1"]));
+    expect(Date.now() - started).toBeLessThan(1500);
+    await blocker;
+  });
+});

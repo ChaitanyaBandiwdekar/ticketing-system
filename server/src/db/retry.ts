@@ -7,6 +7,12 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 export const RETRYABLE_SQLSTATES: ReadonlySet<string> = new Set(["40P01", "40001", "55P03"]);
+/**
+ * 57014 query_canceled: a server-side statement_timeout (managed Postgres often sets one per role).
+ * Still contention, not a bug, so it must not become a 500; but the statement already ran for the
+ * whole timeout, so retrying would only pile more load on a saturated database.
+ */
+export const TIMEOUT_SQLSTATES: ReadonlySet<string> = new Set(["57014"]);
 
 /** Contention outlasted the retry budget. The API maps this to 503 + Retry-After, never 500. */
 export class ContentionError extends Error {
@@ -45,6 +51,9 @@ export async function withContentionRetry<T>(
       return await fn();
     } catch (err) {
       const state = sqlStateOf(err);
+      if (state !== undefined && TIMEOUT_SQLSTATES.has(state)) {
+        throw new ContentionError(state, attempt, { cause: err });
+      }
       if (state === undefined || !RETRYABLE_SQLSTATES.has(state)) throw err;
       if (attempt >= maxAttempts) throw new ContentionError(state, attempt, { cause: err });
       opts.onRetry?.(state, attempt);

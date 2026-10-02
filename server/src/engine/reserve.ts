@@ -18,6 +18,7 @@ export type ReserveInput = {
 
 const MAX_SEATS_PER_REQUEST = 100;
 const MAX_KEY_LENGTH = 200;
+const MAX_USER_ID_LENGTH = 128;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -38,6 +39,11 @@ function validate(input: ReserveInput): ReserveOutcome | null {
     unknown_seats: [],
   });
   if (!UUID.test(input.showId)) return { outcome: "show_not_found", path: "fast" };
+  // The token layer guarantees this, so a violation is a programming error: fail loudly here
+  // rather than half-way through the SQL function on a CHECK constraint.
+  if (input.userId.length === 0 || input.userId.length > MAX_USER_ID_LENGTH) {
+    throw new Error(`user id must be 1-${MAX_USER_ID_LENGTH} characters`);
+  }
   const { seats } = input;
   if (seats.length === 0 || seats.length > MAX_SEATS_PER_REQUEST) {
     return invalid(`seats must contain 1-${MAX_SEATS_PER_REQUEST} labels`);

@@ -76,7 +76,7 @@ Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its check
 **Verification**
 
 - `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅
-- `npm test` ✅: 5 files, 55 tests, ~12–30s locally (mostly embedded-PG `initdb`)
+- `npm test` ✅: 6 files, 60 tests, ~12–30s locally (mostly embedded-PG `initdb`)
   - 500 parallel requests for one seat → exactly 1 created, 499 `seat_taken`; fewer than 20 (the pool size) declines took the locked path, the rest declined lock-free; 0 retries
   - one user × 10 parallel at limit 4 → exactly 4 created, 6 `per_user_limit`
   - same key × 50 → 1 created + 49 replays of the same reservation, never `seat_taken`
@@ -86,7 +86,17 @@ Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its check
   - hold mode: TTL deadline, lapsed hold reads `expired` on replay, frees the user's quota, and another user can take the seat
   - the invariant oracle itself is shown to catch corruption the constraints allow (wrong amount, over-limit)
   - show creation/validation and snapshot tests (28)
-- CI: ⏳ still waiting on the GitHub repo (see Phase 0)
+- CI: runs on push to GitHub
+
+**Industry alignment review** (requested before building on the core; table in Plan.md §2)
+
+Checked against Stripe/brandur idempotency keys, the IETF Idempotency-Key draft, the Ticketmaster/Hello Interview hold design, and pganalyze/Azure write-ups on advisory locks and MultiXacts. Changes:
+
+- **Fixed a real scaling issue:** the `reservations.show_id → shows` FK made every reserve take `FOR KEY SHARE` on the one hot show row (MultiXact contention under a stampede). The FK is dropped; integrity is kept by the function's show check, the seat composite FK, and explicit janitor deletes. A regression test holds `FOR UPDATE` on the show and asserts reserve still completes immediately. It was blocked 2.8s before the fix.
+- `idempotency_key_reused` is now **422** (IETF draft); every other domain decline stays 409.
+- `lock_timeout` 10s → 5s; 57014 (`statement_timeout`) maps to `ContentionError` without a retry (never a 500); retry-helper unit tests added.
+- Added an index on `idempotency_keys.reservation_id` (so cascade deletes don't scan); `userId` length guarded in the wrapper.
+- Kept, as documented deviations: in-flight duplicates wait-then-replay instead of 409, and declines don't consume a key.
 
 **Deviations from plan** (Plan.md updated accordingly)
 
@@ -97,6 +107,6 @@ Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its check
 
 **Open items / needs you**
 
-- Still need the public GitHub repo URL to push and get the first CI run.
+- None. Pushed to https://github.com/ChaitanyaBandiwdekar/ticketing-system.
 
-**Commits:** see `git log`. Phase 1 is one feature commit plus a docs commit.
+**Commits:** see `git log`. Phase 1 is a feature commit, a docs commit, and a review-hardening commit.

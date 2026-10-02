@@ -35,7 +35,8 @@ create function fdfs_reserve(
 language plpgsql
 -- With the fast path, real lock waits are a few ms; this only bounds pathological ones. The app
 -- retries 55P03 (and 40P01/40001) a bounded number of times and never reports contention as a 500.
-set lock_timeout = '10s'
+-- Function-scoped SET is restored on exit, so it is safe behind a transaction pooler.
+set lock_timeout = '5s'
 as $$
 declare
   v_n         integer := coalesce(cardinality(p_labels), 0);

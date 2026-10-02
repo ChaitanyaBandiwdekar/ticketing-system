@@ -21,9 +21,17 @@ create table shows (
   created_at       timestamptz not null default now()
 );
 
+-- reservations.show_id deliberately has NO foreign key to shows. Every reservation insert would
+-- take FOR KEY SHARE on the one show row that the whole stampede targets; concurrent key-share
+-- lockers on a single row are tracked as MultiXacts, a well-known Postgres throughput cliff
+-- (MultiXact SLRU contention) on hot parent rows. Integrity is kept without it:
+--   - fdfs_reserve reads the show before inserting, and only inserts after locking the show's
+--     seats (seats.show_id *is* a foreign key, checked once at show creation, never on reserve);
+--   - while a reservation holds seats, the composite FK below pins its show_id to theirs;
+--   - the janitor deletes a show's reservations explicitly, before the show.
 create table reservations (
   id           uuid        primary key default gen_random_uuid(),
-  show_id      uuid        not null references shows (id) on delete cascade,
+  show_id      uuid        not null,
   user_id      text        not null check (length(user_id) between 1 and 128),
   seat_labels  text[]      not null check (cardinality(seat_labels) > 0),
   amount_paise bigint      not null check (amount_paise > 0),
@@ -75,7 +83,10 @@ create table idempotency_keys (
   primary key (user_id, key)
 );
 
+-- TTL reaping (keys are retry protection, not an archive; 24h like Stripe's).
 create index idempotency_keys_created_idx on idempotency_keys (created_at);
+-- The cascade from a deleted reservation must not scan the whole key table.
+create index idempotency_keys_reservation_idx on idempotency_keys (reservation_id);
 
 -- A seat is free if nobody holds it, or its hold has lapsed. Expiry is derived from DB time, so
 -- correctness never waits on the sweeper. Plain SQL + STABLE: the planner inlines it.

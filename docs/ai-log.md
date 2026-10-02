@@ -54,3 +54,5 @@ Production still runs Node 22 in Docker.
 - Composite FK (seat → reservation of the same show and user) instead of the plain `reservation_id` FK in the plan.
 
 **Human:** directed the phase to start ("continue") and asked for trivial work to be delegated to Sonnet subagents.
+
+**Review (human-directed):** before building on the core, the human asked for it to be checked against industry practice. The AI researched Stripe/brandur idempotency keys, the IETF Idempotency-Key draft, the Ticketmaster hold design, and Postgres advisory-lock and MultiXact pitfalls, then compared them with the implementation. It found and fixed a hot-parent FK lock on the show row, proved first by a failing regression test. Status codes were aligned with the IETF draft (422 for key reuse), and two deviations were kept and documented, with reasons.
