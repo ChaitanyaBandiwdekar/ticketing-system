@@ -82,3 +82,16 @@ Production still runs Node 22 in Docker.
 - A `text/plain` body gets a 400 (the schema rejects it); 415 is for media types with no parser.
 
 **Human:** said "continue" after Phase 2.
+
+## Phase 4: Realtime layer
+
+**AI implemented:** the event bus, the SSE hub, the stream route, the jobs (Periodic runner, sweeper, reconciler, janitor + maintenance SQL), the request deadline, and all tests (stream, jobs, deadline), with no subagents. It checked Fastify 5's `reply.hijack()` / `onResponse` / `preClose` semantics against the docs (Context7) and the PgBouncer image's `QUERY_WAIT_TIMEOUT` support against its entrypoint script.
+
+**Decisions made during the phase:**
+
+- Events are hints and the hub re-reads the truth through a per-show serialized queue. Forwarding event payloads last-write-wins would diverge when two commits on one seat are acknowledged to Node in the opposite order.
+- Streams bypass admission control and have their own cap.
+- A DB deadline on every request path, after diagnosing the CI fail-closed timeout (PgBouncer queueing for a stopped Postgres). The AI diagnosed the CI failures from the public check-run annotations (exit codes 126 and 28), since job logs need repo-admin access.
+- A flaky convergence assertion was traced to counts leading the seat map by one window. The test was fixed and the behaviour documented, rather than retrying the test.
+
+**Human:** said to continue and finish today, keeping quality up. The phase's hard stop was folded into that instruction: Phase 3b is blocked on credentials, so work moved on to Phase 4.

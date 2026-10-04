@@ -2,19 +2,19 @@
 
 Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its checks run, this file updated, a commit, and a **hard stop** until the go-ahead ("continue").
 
-| Phase | Scope                                   | Status         |
-| ----- | --------------------------------------- | -------------- |
-| 0     | Foundation                              | ✅ done        |
-| 1     | Core engine I: atomic reserve           | ✅ done        |
-| 2     | Core engine II: lifecycle + audit       | ✅ done        |
-| 3     | API service                             | ✅ done        |
-| 3b    | Smoke deploy (Render free + Supabase)   | ⬜ not started |
-| 4     | Realtime layer (SSE, jobs)              | ⬜ not started |
-| 5     | UI I: shell + shows                     | ⬜ not started |
-| 6     | UI II: live hall                        | ⬜ not started |
-| 7     | Observability + War Room                | ⬜ not started |
-| 8     | Burst CLI + Stampede simulator + tuning | ⬜ not started |
-| 9     | Final deploy + docs                     | ⬜ not started |
+| Phase | Scope                                   | Status                       |
+| ----- | --------------------------------------- | ---------------------------- |
+| 0     | Foundation                              | ✅ done                      |
+| 1     | Core engine I: atomic reserve           | ✅ done                      |
+| 2     | Core engine II: lifecycle + audit       | ✅ done                      |
+| 3     | API service                             | ✅ done                      |
+| 3b    | Smoke deploy (Render free + Supabase)   | ⏸ blocked: needs credentials |
+| 4     | Realtime layer (SSE, jobs)              | ✅ done                      |
+| 5     | UI I: shell + shows                     | ⬜ not started               |
+| 6     | UI II: live hall                        | ⬜ not started               |
+| 7     | Observability + War Room                | ⬜ not started               |
+| 8     | Burst CLI + Stampede simulator + tuning | ⬜ not started               |
+| 9     | Final deploy + docs                     | ⬜ not started               |
 
 ---
 
@@ -205,3 +205,61 @@ Checked against Stripe/brandur idempotency keys, the IETF Idempotency-Key draft,
 - **Phase 3b (smoke deploy) needs you:** create the Supabase project (Singapore) and share the pooler URLs (transaction :6543 and session :5432) and the DB password via `.env`/Render only; create a Render account and connect the GitHub repo. I'll add `render.yaml`.
 
 **Commits:** see `git log`. Phase 3 is a feature commit and a docs commit.
+
+---
+
+## Phase 3 follow-up: CI compose job
+
+The Phase 3 push failed CI's compose job, and the first fix revealed a second failure:
+
+1. **Exit 126:** `scripts/smoke.sh` and `scripts/ci/fail-closed.sh` were committed from Windows with mode 100644. Fixed with `git update-index --chmod=+x` (`07f15ea`); after that, the smoke step passed in CI.
+2. **The fail-closed step timed out (curl exit 28):** with Postgres stopped, a reserve hung for more than 30s instead of answering 503. The app's connections are to PgBouncer, which stays up and queues each query until `query_wait_timeout` (default 120s). Fixed in Phase 4 at two layers (pre-mortem #17 in Plan.md):
+   - Every request-path DB call now has a deadline (`DB_REQUEST_TIMEOUT_MS`, default 10s) → 503 `db_unavailable`.
+   - Compose sets PgBouncer `QUERY_WAIT_TIMEOUT=10`.
+
+   A test runs the app against a TCP "black hole" (accepts, never answers): reserve, reads, stream and cancel all return 503 in under 2s, `/healthz` stays 200, and `/readyz` returns 503.
+
+---
+
+## Phase 4: Realtime layer ✅
+
+**Deliverables**
+
+- [x] `server/src/realtime/bus.ts`: an in-process, after-commit event bus. Each engine mutation is one autocommitted statement, so routes emit after the call returns. Events are hints `{showId, labels, cause}`, not state. Emitted on reserve `created`, confirm/cancel with `changed: true`, and sweeper releases.
+- [x] `server/src/realtime/hub.ts`: the SSE hub behind `GET /stream?show=<id>`.
+  - **Frames:** `snapshot` (compact: `labels[]` + a one-char-per-seat `status` string), `delta` (`changes {label: a|h|c}` + `counts`), `audit`, `gone`, and `: hb` heartbeats.
+  - **Convergence by construction:** per show, changed labels are coalesced for `STREAM_COALESCE_MS`, then re-read together with the counts in one statement (`getSeatStates`). The connect snapshot, delta reads and resyncs share one serialized queue per show, and frames go out in queue order.
+  - Periodic full resync (`STREAM_RESYNC_MS`) as a safety net for multi-instance setups.
+  - Connection cap → 503 `stream_capacity`. A slow consumer is dropped once its buffer passes 4 MB. Reads have a deadline. One log line per stream on close.
+- [x] `server/src/http/routes/stream.ts`: errors before the stream opens use the normal JSON shape (404 unknown show, 400 missing `show`, 503 capacity/draining/DB). Streams bypass admission control (they would hold a slot forever) and end on `preClose`, so drain never waits on them.
+- [x] Jobs (`server/src/jobs/`):
+  - `Periodic`: single-flight ticks; logs the first failure of a streak, then "recovered"; `stop()` waits for the in-flight tick.
+  - **sweeper:** sweeps again while a full batch comes back; publishes released seats.
+  - **reconciler:** audits shows that changed in the last 10 min plus watched shows (≤ 25 per tick). Counts violations, logs `invariant_violation`, and pushes `audit` frames.
+  - **janitor:** `server/src/engine/maintenance.ts`. Deletes 24h-old ephemeral shows in global lock order (seats sorted `FOR UPDATE` → seats → reservations → show) and expires idempotency keys in batches.
+- [x] `main.ts`: jobs start after `listen`. On SIGTERM: readiness 503 → jobs stop → streams end → in-flight requests finish → pools drain.
+- [x] Config: `STREAM_*`, `RECONCILE_INTERVAL_MS`, `JANITOR_INTERVAL_MS`, `EPHEMERAL_SHOW_TTL_HOURS`, `IDEMPOTENCY_KEY_TTL_HOURS`, `DB_REQUEST_TIMEOUT_MS` (all in `.env.example`).
+- [x] `scripts/smoke.sh` now also opens `/stream` and checks the snapshot (runs in the CI compose job).
+
+**Verification**
+
+- `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅
+- `npm test` ✅: 18 files, 188 tests, ~40s locally
+  - **Two SSE clients converge:** 30 users run 4 rounds each of reserve (sometimes with a replayed retry) → confirm / cancel / let lapse, against a 40-seat, 1s-hold show. The sweeper runs every 50 ms, and a second client joins mid-burst. Both maps equal the DB's effective state and each other's, with counts matching. Each client got **only its connect snapshot** (resync disabled), so convergence came from deltas alone.
+  - Snapshot shape + SSE headers; reserve → confirm → cancel deltas with reconciled counts; idempotent repeats publish nothing; 40 parallel reserves → fewer than 40 deltas; heartbeats; JSON errors before open; `gone` after the janitor deletes a watched show; capacity 503 + Retry-After and recovery; periodic resync; `app.close()` ends streams in < 2s.
+  - Jobs (9): Periodic never overlaps, survives failures, and `stop()` waits. The sweeper releases per show, spares live holds, and loops for 1,200 lapsed seats in one tick. The reconciler covers active and watched shows only, counts and logs violations, and forgets deleted shows. The janitor deletes only old ephemeral shows with all their rows; expired keys turn a late retry into a new request. **A purge mid-stampede** (120 concurrent reserves) gives only `created`/`seat_taken`/`show_not_found` and leaves zero orphan rows.
+  - Deadline (4), including the black-hole database test above.
+- The production bundle ran locally against embedded Postgres. `curl /stream` received the snapshot, a hold delta, the sweeper's release delta after the 2s TTL, and an `audit` verdict every second, then logged one `stream closed` line.
+- One flaky run surfaced and was fixed in the test: a delta's `counts` can lead the seat map by one window (documented in hub.ts).
+
+**Deviations from plan**
+
+- The hub re-reads changed seats instead of forwarding event payloads (see above): one extra read per show per window, in exchange for guaranteed convergence.
+- Seat states on the stream use a compact `a/h/c` encoding (the plan's "compact seat encoding" for 10k-seat halls). `GET /shows/:id` keeps full words.
+- Reconciler and janitor stats are plain counters for now; Phase 7 exports them as Prometheus metrics.
+
+**Open items / needs you**
+
+- **Phase 3b** still needs the Supabase project (Singapore) and the pooler URLs/password, plus a Render account connected to the repo. Nothing in Phases 4–8 depends on it.
+
+**Commits:** see `git log`. Phase 4 is a feature commit and a docs commit.

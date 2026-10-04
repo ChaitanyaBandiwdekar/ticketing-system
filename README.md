@@ -60,9 +60,18 @@ The paths are exactly the spec's. Every error has the shape `{"error": {"code", 
 | `POST /reservations/:id/confirm` | owner token | Hold → confirmed. Idempotent                                                                                               |
 | `POST /reservations/:id/cancel`  | owner token | Releases the seats. Idempotent                                                                                             |
 | `GET /me/reservations`           | user token  | `?show_id=`                                                                                                                |
+| `GET /stream?show=:id`           | none        | Live seat map as server-sent events: `snapshot`, then coalesced `delta`s, `audit` verdicts, heartbeats (see below)         |
 | `GET /healthz` · `GET /readyz`   | none        | Liveness (no I/O) · readiness (DB check on its own pool; fails closed, 503 while draining)                                 |
 
-**Status codes:** 400 validation / `unknown_seats` / missing key · 401 no or bad token · 403 not the owner or not admin · 404 unknown show or reservation · 409 `seat_taken`, `per_user_limit`, `reservation_expired`, `reservation_cancelled` · 422 `idempotency_key_reused` · 429 `overloaded` (only past `MAX_QUEUE` in flight) · 503 `db_unavailable` / `contention` (with `Retry-After`). A `user_id` in a request body is ignored: identity comes only from the token.
+**Live seat map (`GET /stream`).** An SSE stream that opens with `event: snapshot` `{seq, show, counts, labels[], status}`, where `status` has one character per seat (`a` available, `h` held, `c` confirmed). Seat changes then arrive as `event: delta` `{seq, changes: {label: a|h|c}, counts}`, coalesced per show every `STREAM_COALESCE_MS` (100 ms). The reconciler's verdicts arrive as `event: audit` `{ok, violations, at}`. Apply frames in order and the map equals the database. The hub re-reads every changed seat from Postgres before sending it, so the stream converges even when events arrive out of order. A full snapshot every `STREAM_RESYNC_MS` is only a safety net. Past `STREAM_MAX_CLIENTS` streams, it answers 503 `stream_capacity`.
+
+**Background jobs.** These run in the API process:
+
+- **sweeper:** finalizes lapsed holds and publishes the freed seats.
+- **reconciler:** runs `audit()` every 5s on recently active and watched shows. A violation is logged as `invariant_violation`.
+- **janitor:** deletes ephemeral shows after 24h and idempotency keys after 24h.
+
+**Status codes:** 400 validation / `unknown_seats` / missing key · 401 no or bad token · 403 not the owner or not admin · 404 unknown show or reservation · 409 `seat_taken`, `per_user_limit`, `reservation_expired`, `reservation_cancelled` · 422 `idempotency_key_reused` · 429 `overloaded` (only past `MAX_QUEUE` in flight) · 503 `db_unavailable` / `contention` (with `Retry-After`). Every request-path DB call has a deadline (`DB_REQUEST_TIMEOUT_MS`, 10s), so an unreachable database is a fast 503, never a hang. A `user_id` in a request body is ignored: identity comes only from the token.
 
 ## Repository layout
 
