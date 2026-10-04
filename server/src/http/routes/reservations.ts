@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { cancel, confirm, listReservations } from "../../engine/lifecycle";
 import { reserve } from "../../engine/reserve";
@@ -13,6 +14,8 @@ const REPLAY_HEADER = "idempotent-replayed";
 /**
  * Resolves the idempotency key. The IETF Idempotency-Key header is preferred; a body field is
  * accepted for clients that can't set headers. Both present and different is ambiguous -> 400.
+ * No key at all is a request that can't be retried safely, not an invalid one: it gets a fresh
+ * server key, so it is booked or declined on its own and never replays anything.
  */
 function idempotencyKey(request: FastifyRequest<{ Body: ReserveBody }>): string {
   const header = request.headers["idempotency-key"];
@@ -28,9 +31,8 @@ function idempotencyKey(request: FastifyRequest<{ Body: ReserveBody }>): string 
     );
   }
   const key = header ?? fromBody;
-  if (key === undefined || key.length === 0) {
-    throw new ApiError(400, "validation_error", "an Idempotency-Key header is required");
-  }
+  if (key === undefined) return `~${randomUUID()}`;
+  if (key.length === 0) throw new ApiError(400, "validation_error", "Idempotency-Key is empty");
   if (key.length > 200) {
     throw new ApiError(400, "validation_error", "Idempotency-Key must be at most 200 characters");
   }

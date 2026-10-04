@@ -138,12 +138,12 @@ describe("metrics and ops", () => {
       // Same-key retries, then the key reused for other seats.
       ...Array.from({ length: 5 }, () => reserve(replayer!.headers, ["A30"], "same-key")),
       reserve(replayer!.headers, ["A29"], "same-key"),
-      // Spoofed identity, unknown seat, unknown show, no token, no key.
+      // Spoofed identity, unknown seat, unknown show, no token, an over-long key.
       reserve(spoofer!.headers, ["A15"], uniq("k"), { user_id: "someone-else" }),
       reserve(users[3]!.headers, ["Z99"]),
       reserve(users[4]!.headers, ["A2"], uniq("k"), {}, randomUUID()),
       reserve({}, ["A2"]),
-      reserve(users[5]!.headers, ["A2"], null),
+      reserve(users[5]!.headers, ["A2"], "k".repeat(201)),
     ];
     // Read the seat map while the burst runs: counts must reconcile in every snapshot.
     const polls = Array.from({ length: 8 }, () =>

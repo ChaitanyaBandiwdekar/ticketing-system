@@ -56,6 +56,7 @@ The crossed-pairs tests (`[X,Y]` against `[Y,X]`, hundreds at once) run with zer
 - A duplicate that arrives while the original is in flight waits for it and replays; it does not get a 409. The original takes milliseconds, so waiting is cheaper than a 409 and a client retry loop.
 - A decline doesn't consume the key. A retry after `seat_taken` is evaluated again, which can never double-book.
 - Keys expire after 24h (the janitor). A retry after that is a new request.
+- A request without a key gets a fresh server key: it is booked or declined on its own, exactly like a keyed one, but a retry of it can't be recognised. A 400 instead would turn a keyless crowd into zero bookings.
 
 The client side matters as much. The UI and the burst reuse a key for every retry of the same seat set: after a timeout, a 429, or a 503. That closes the one gap a deadline opens: a call abandoned at the deadline may still commit, and the same-key retry then replays it instead of booking again.
 

@@ -74,6 +74,26 @@ const INITIAL: Settings = {
   metrics: true,
 };
 
+/** One click to a known scale. "Full" is the CLI's run: ~21,600 requests at 2,000 seats. */
+const PRESETS: { label: string; settings: Settings }[] = [
+  { label: "Quick · 3k", settings: INITIAL },
+  {
+    label: "Full · 20k",
+    settings: {
+      hall: "large",
+      users: 5_000,
+      requests: 20_000,
+      hotUsers: 500,
+      retryPct: 3,
+      spoofPct: 1,
+      overLimitUsers: 20,
+      edgeCases: true,
+      concurrency: 256,
+      metrics: true,
+    },
+  },
+];
+
 const LIMITS = {
   users: [1, 10_000],
   requests: [0, 20_000],
@@ -492,6 +512,22 @@ export function StampedePage() {
               />
             )}
           </Field>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted">Presets</span>
+            {PRESETS.map((p) => (
+              <Button
+                key={p.label}
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={running}
+                onClick={() => setS(p.settings)}
+              >
+                {p.label}
+              </Button>
+            ))}
+          </div>
 
           <Segmented
             label="Hall"

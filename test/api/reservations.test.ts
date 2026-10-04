@@ -72,12 +72,21 @@ describe("POST /shows/:id/reserve", () => {
     expect(errorOf(both).code).toBe("validation_error");
   });
 
-  it("400 without an idempotency key", async () => {
+  it("without a key, each request stands alone: booked or declined, never replayed", async () => {
     const show = await t.show();
     const { headers } = await t.user();
-    const res = await reserve(show.id, headers, { seats: ["A1"] }, null);
-    expect(res.statusCode).toBe(400);
-    expect(errorOf(res).message).toMatch(/Idempotency-Key/);
+    const first = await reserve(show.id, headers, { seats: ["A1"] }, null);
+    expect(first.statusCode).toBe(201);
+    const again = await reserve(show.id, headers, { seats: ["A1"] }, null);
+    expect(again.statusCode).toBe(409);
+    expect(errorOf(again).code).toBe("seat_taken");
+    const other = await reserve(show.id, headers, { seats: ["A2"] }, null);
+    expect(other.statusCode).toBe(201);
+    expect(other.json().reservation_id).not.toBe(first.json().reservation_id);
+
+    const empty = await reserve(show.id, headers, { seats: ["A3"] }, "");
+    expect(empty.statusCode).toBe(400);
+    expect(errorOf(empty).message).toMatch(/Idempotency-Key/);
   });
 
   it("409 when a key is reused for a different request", async () => {

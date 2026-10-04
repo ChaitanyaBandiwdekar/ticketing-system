@@ -43,8 +43,13 @@ export class DbProgress {
   }
 }
 
-/** The longest a call may wait while the database is answering others: 6 deadlines. */
-export const DEADLINE_CAP_FACTOR = 6;
+/**
+ * The longest a call may wait while the database is answering others: 18 deadlines (3 min at
+ * 10s). It must outlast a full admission queue: 8,000 requests in flight (MAX_QUEUE) drain in
+ * ~65s at the free instance's ~125 reserves/s, so 6 deadlines (60s) turned the tail of a
+ * 20,000-at-once burst into 503s. 18 holds down to ~45/s.
+ */
+export const DEADLINE_CAP_FACTOR = 18;
 
 export function withDeadline<T>(
   work: Promise<T>,

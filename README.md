@@ -45,7 +45,7 @@ URL=https://fdfs-dkyx.onrender.com
 TOKEN=$(curl -s -X POST $URL/auth/login -H 'content-type: application/json' -d '{"username":"grader"}' | jq -r .token)
 # The open Premiere screening (newest first).
 SHOW=$(curl -s $URL/shows | jq -r '[.shows[] | select(.name | startswith("FDFS Premiere"))][0].id')
-# Reserve. The Idempotency-Key is required: the same key again returns the original 201, never a second booking.
+# Reserve. With an Idempotency-Key, the same key again returns the original 201, never a second booking.
 curl -s -X POST $URL/shows/$SHOW/reserve -H "authorization: Bearer $TOKEN"   -H 'content-type: application/json' -H 'idempotency-key: grader-1' -d '{"seats":["C7","C8"]}'
 curl -si -X POST $URL/shows/$SHOW/reserve -H "authorization: Bearer $TOKEN"   -H 'content-type: application/json' -H 'idempotency-key: grader-1' -d '{"seats":["C7","C8"]}' | grep -i replayed
 curl -s $URL/shows/$SHOW/audit
@@ -146,7 +146,7 @@ The live parts come from one server-sent-events feed (`GET /ops/stream`). Every 
 
 ### The Stampede simulator
 
-`/app/stampede` is the burst below, fired from your browser at a fresh show: set the crowd, the requests, the hot-seat storm on A12, the share of same-key retries and spoofed `user_id`s, and how many users try to exceed the limit. The hall fills live beside the progress, and the run ends with the outcome distribution and every check. It needs the admin key, because it creates the show.
+`/app/stampede` is the burst below, fired from your browser at a fresh show: set the crowd, the requests, the hot-seat storm on A12, the share of same-key retries and spoofed `user_id`s, and how many users try to exceed the limit. The hall fills live beside the progress, and the run ends with the outcome distribution and every check. The **Full · 20k** preset is the CLI's scale (about 21,600 requests at a 2,000-seat hall, 256 in flight), so nothing needs cloning or installing. It needs the admin key, because it creates the show.
 
 ## The burst
 
@@ -202,21 +202,21 @@ Logs are one JSON line per request (pino) carrying `request_id`, route, status, 
 
 The paths are exactly the spec's. Every error has the shape `{"error": {"code", "message", "request_id", ...}}`, and every response echoes `x-request-id`.
 
-| Method & path                    | Auth        | Notes                                                                                                                                              |
-| -------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /auth/login`               | none        | `{username}` → `{token, user_id}`. Demo IdP: an HS256 JWT valid for 24h; `sub` is the user id                                                      |
-| `POST /auth/tokens`              | none        | `{count ≤ 10000, prefix?, start?}` → tokens for `prefix-start…`; for load tests                                                                    |
-| `POST /shows`                    | admin key   | `{name, seats[], price_paise, per_user_limit?=4, hold_ttl_seconds?, ephemeral?}` → 201                                                             |
-| `GET /shows`                     | none        | Newest first, with counts; `?include_ephemeral=true`                                                                                               |
-| `GET /shows/:id`                 | none        | Show + `seats[{label,status}]` + `counts{total,available,held,confirmed,invariant_ok}` from one snapshot (cached ≤ 250 ms, dropped on every write) |
-| `GET /shows/:id/audit`           | none        | Books-balance proof: `{ok, counts, violations[]}`                                                                                                  |
-| `POST /shows/:id/reserve`        | user token  | `{seats[]}` + `Idempotency-Key` header (or `idempotency_key`). 201; a replay is the original 201 + `Idempotent-Replayed: true`. All or nothing     |
-| `POST /reservations/:id/confirm` | owner token | Hold → confirmed. Idempotent                                                                                                                       |
-| `POST /reservations/:id/cancel`  | owner token | Releases the seats. Idempotent                                                                                                                     |
-| `GET /me/reservations`           | user token  | `?show_id=`                                                                                                                                        |
-| `GET /stream?show=:id`           | none        | Live seat map as server-sent events: `snapshot`, then coalesced `delta`s, `audit` verdicts, heartbeats (see below)                                 |
-| `GET /healthz` · `GET /readyz`   | none        | Liveness (no I/O) · readiness (DB check on its own pool; fails closed, 503 while draining). Aliases: `/health`, `/ready`                           |
-| `GET /metrics` · `GET /ops/*`    | none        | Prometheus metrics and the War Room's data (see [Observability](#observability))                                                                   |
+| Method & path                    | Auth        | Notes                                                                                                                                                   |
+| -------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/login`               | none        | `{username}` → `{token, user_id}`. Demo IdP: an HS256 JWT valid for 24h; `sub` is the user id                                                           |
+| `POST /auth/tokens`              | none        | `{count ≤ 10000, prefix?, start?}` → tokens for `prefix-start…`; for load tests                                                                         |
+| `POST /shows`                    | admin key   | `{name, seats[], price_paise, per_user_limit?=4, hold_ttl_seconds?, ephemeral?}` → 201                                                                  |
+| `GET /shows`                     | none        | Newest first, with counts; `?include_ephemeral=true`                                                                                                    |
+| `GET /shows/:id`                 | none        | Show + `seats[{label,status}]` + `counts{total,available,held,confirmed,invariant_ok}` from one snapshot (cached ≤ 250 ms, dropped on every write)      |
+| `GET /shows/:id/audit`           | none        | Books-balance proof: `{ok, counts, violations[]}`                                                                                                       |
+| `POST /shows/:id/reserve`        | user token  | `{seats[]}` + optional `Idempotency-Key` header (or `idempotency_key`). 201; a replay is the original 201 + `Idempotent-Replayed: true`. All or nothing |
+| `POST /reservations/:id/confirm` | owner token | Hold → confirmed. Idempotent                                                                                                                            |
+| `POST /reservations/:id/cancel`  | owner token | Releases the seats. Idempotent                                                                                                                          |
+| `GET /me/reservations`           | user token  | `?show_id=`                                                                                                                                             |
+| `GET /stream?show=:id`           | none        | Live seat map as server-sent events: `snapshot`, then coalesced `delta`s, `audit` verdicts, heartbeats (see below)                                      |
+| `GET /healthz` · `GET /readyz`   | none        | Liveness (no I/O) · readiness (DB check on its own pool; fails closed, 503 while draining). Aliases: `/health`, `/ready`                                |
+| `GET /metrics` · `GET /ops/*`    | none        | Prometheus metrics and the War Room's data (see [Observability](#observability))                                                                        |
 
 **Live seat map (`GET /stream`).** An SSE stream that opens with `event: snapshot` `{seq, show, counts, labels[], status}`, where `status` has one character per seat (`a` available, `h` held, `c` confirmed). Seat changes then arrive as `event: delta` `{seq, changes: {label: a|h|c}, counts}`, coalesced per show every `STREAM_COALESCE_MS` (100 ms). The reconciler's verdicts arrive as `event: audit` `{ok, violations, at}`. Apply frames in order and the map equals the database. The hub re-reads every changed seat from Postgres before sending it, so the stream converges even when events arrive out of order. A full snapshot every `STREAM_RESYNC_MS` is only a safety net. Past `STREAM_MAX_CLIENTS` streams, it answers 503 `stream_capacity`.
 
@@ -226,7 +226,7 @@ The paths are exactly the spec's. Every error has the shape `{"error": {"code", 
 - **reconciler:** runs `audit()` every 5s on recently active and watched shows. A violation is logged as `invariant_violation` and counted in `fdfs_invariant_violations_total`.
 - **janitor:** deletes ephemeral shows after 24h and idempotency keys after 24h.
 
-**Status codes:** 400 validation / `unknown_seats` / missing key · 401 no or bad token · 403 not the owner or not admin · 404 unknown show or reservation · 409 `seat_taken`, `per_user_limit`, `idempotency_key_reused`, `reservation_expired`, `reservation_cancelled` · 429 `overloaded` (only past `MAX_QUEUE`, 8,000, in flight; `Retry-After` is the time to drain what is in flight at the recent completion rate) · 503 `db_unavailable` / `contention` (with `Retry-After`). Every request-path DB call has a deadline (`DB_REQUEST_TIMEOUT_MS`, 10s), so an unreachable database is a fast 503, never a hang. A `user_id` in a request body is ignored: identity comes only from the token.
+**Status codes:** 400 validation / `unknown_seats` / empty or over-long key · 401 no or bad token · 403 not the owner or not admin · 404 unknown show or reservation · 409 `seat_taken`, `per_user_limit`, `idempotency_key_reused`, `reservation_expired`, `reservation_cancelled` · 429 `overloaded` (only past `MAX_QUEUE`, 8,000, in flight; `Retry-After` is the time to drain what is in flight at the recent completion rate) · 503 `db_unavailable` / `contention` (with `Retry-After`). Every request-path DB call has a deadline (`DB_REQUEST_TIMEOUT_MS`, 10s), so an unreachable database is a fast 503, never a hang. A `user_id` in a request body is ignored: identity comes only from the token.
 
 ## Repository layout
 
