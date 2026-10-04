@@ -3,7 +3,7 @@ import { audit } from "../../engine/audit";
 import { createShow, getShowSnapshot, listShows, ShowValidationError } from "../../engine/shows";
 import type { AppContext } from "../app";
 import { ApiError } from "../errors";
-import { countsSchema, showProperties, uuidParam } from "../schemas";
+import { countsSchema, seatSchema, showProperties, uuidParam } from "../schemas";
 
 type CreateShowBody = {
   name: string;
@@ -57,7 +57,10 @@ export const showRoutes =
             },
           },
           response: {
-            201: { type: "object", properties: showProperties },
+            201: {
+              type: "object",
+              properties: { ...showProperties, seats: { type: "array", items: seatSchema } },
+            },
           },
         },
       },
@@ -86,9 +89,11 @@ export const showRoutes =
           );
           request.logCtx = { show: show.id, seats: show.total_seats };
           const n = show.total_seats;
+          // Every seat starts available, in the order given (the order GET /shows/:id lists).
           return reply.code(201).send({
             ...show,
             counts: { total: n, available: n, held: 0, confirmed: 0, invariant_ok: true },
+            seats: b.seats.map((label) => ({ label, status: "available" })),
           });
         } catch (err) {
           if (err instanceof ShowValidationError) {

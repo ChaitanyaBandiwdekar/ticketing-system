@@ -4,20 +4,20 @@ How FirstDayFirstShow keeps its guarantees under a stampede, what happens when t
 
 ## The guarantees, and how they are shown
 
-| Guarantee                              | Enforced by                                                                                                  | Shown by                                                                                 |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| No seat sold twice                     | One row per seat; a conditional update under row locks taken in one global order                             | Burst: final map equals every grant; `fdfs_invariant_violations_total` 0                 |
-| `available + held + confirmed = total` | Seats are never inserted or deleted after creation, so the counts are a partition of fixed rows              | Every `GET /shows/:id` derives seats and counts from one snapshot; the reconciler audits |
-| Nobody over the per-user limit         | A per-(show, user) advisory lock around an exact count                                                       | `audit()`; the burst's `limit` scenario books exactly 4 of 10, per user                  |
-| A retry never books twice              | Idempotency keys scoped per user, with a request fingerprint, claimed in the same transaction as the booking | The burst's `retry` and `keyreuse` scenarios                                             |
-| Identity only from the token           | The JWT `sub`; a body `user_id` is ignored and counted                                                       | `fdfs_identity_spoof_ignored_total`; the burst's `spoof` scenario                        |
-| No 5xx                                 | Load is shed as 429 with `Retry-After`; a 503 means only an unreachable database; nothing else is a 5xx      | The 20k burst at 0.1 CPU in CI on every push: 0 5xx, 0 network errors                    |
+| Guarantee                              | Enforced by                                                                                                         | Shown by                                                                                 |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| No seat sold twice                     | One row per seat; a conditional update under row locks taken in one global order                                    | Burst: final map equals every grant; `fdfs_invariant_violations_total` 0                 |
+| `available + held + confirmed = total` | Seats are never inserted or deleted after creation, so the counts are a partition of fixed rows                     | Every `GET /shows/:id` derives seats and counts from one snapshot; the reconciler audits |
+| Nobody over the per-user limit         | A per-(show, user) advisory lock around an exact count                                                              | `audit()`; the burst's `limit` scenario books exactly 4 of 10, per user                  |
+| A retry never books twice              | Idempotency keys scoped per user, with a request fingerprint, claimed in the same transaction as the booking        | The burst's `retry` and `keyreuse` scenarios                                             |
+| Identity only from the token           | The JWT `sub`; a body `user_id` is ignored and counted                                                              | `fdfs_identity_spoof_ignored_total`; the burst's `spoof` scenario                        |
+| No 5xx                                 | Load is shed as 429 with `Retry-After`; a 503 means the database is unreachable (or a drain); nothing else is a 5xx | The 20k burst at 0.1 CPU in CI on every push: 0 5xx, every request answered              |
 
 Measured with the server held to Render's free tier (0.1 CPU, 512 MB):
 
 - **Locally:** 21,550 checked reserve requests at ~180 req/s, p50 1.2s, p99 3.1s, 0 5xx.
 - **CI:** the Docker image behind PgBouncer, on a slower runner: ~105 req/s, p99 6.1s, 0 5xx, not OOM-killed.
-- **Live:** the smoke deploy took 1k and 4k bursts with 0 5xx and a green audit.
+- **Live:** the smoke deploy took 1k and 4k bursts with 0 5xx and a green audit. The first 20k-scale burst against the public URL (21,600 requests) passed every check.
 
 ## The atomic decision
 
@@ -67,7 +67,7 @@ Shows run in one of two modes:
 - **Instant (the default, the spec's contract):** reserve → `confirmed`.
 - **Hold:** `hold_ttl_seconds` set. Reserve → `held` → confirm before the deadline, or the hold lapses.
 
-Expiry is **derived from the database clock**. A seat is free if it is available, or held with `held_until < now()`. No timer has to fire for a lapsed seat to be sellable, and no app clock is ever consulted.
+Expiry is **derived from the database clock**. A seat is free if it is available, or held with `held_until <= now()`. No timer has to fire for a lapsed seat to be sellable, and no app clock is ever consulted.
 
 The sweeper is cleanup, not correctness. It finalizes lapsed holds with `SKIP LOCKED` (so it never waits on a request) and publishes the freed seats to the live maps. A late confirm or cancel of a lapsed hold answers 409 `reservation_expired`. Every seat write is guarded by `reservation_id = <this one>`, so a late call can't touch a seat that was re-sold.
 
@@ -76,7 +76,7 @@ The sweeper is cleanup, not correctness. It finalizes lapsed holds with `SKIP LO
 Postgres is the only source of truth. No cache ever decides a seat. When the database is unreachable, the service refuses rather than guesses:
 
 - **Writes** answer 503 `db_unavailable` with `Retry-After`. Every request-path DB call has a deadline (10s), so a database behind a pooler that silently queues becomes a fast 503, not a hang. CI found this case: PgBouncer queued queries for 120s while Postgres was stopped.
-  - The deadline fails a _silent_ database, not a _busy_ one. If the database answered any other call within the window, the call keeps waiting, up to six deadlines. At 0.1 CPU a burst's first wave can queue for 20s, and that must stay slow, not turn into errors.
+  - The deadline fails a _silent_ database, not a _busy_ one. If the database answered any other call within the window, the call keeps waiting, up to 18 deadlines (3 minutes). At 0.1 CPU a full 8,000-request admission queue takes ~65s to drain, and that must stay slow, not turn into errors.
 - **Reads** answer 503 too. The 250 ms micro-cache on `GET /shows/:id` only spares the CPU of serializing; it doesn't serve stale maps through an outage. Every write drops the show's entry, so a client reads its own booking right after the 201.
 - **`/readyz`** fails closed on its own one-connection pool. **`/healthz`** stays 200, so the platform doesn't restart a healthy process because its database is away.
 - **The live maps** keep their last state. The page says "Reconnecting", polls the REST read every 5s while the stream is down, and converges again on reconnect.
@@ -98,7 +98,20 @@ A free instance has 0.1 CPU. A 20k burst can't be fast there, but it can stay co
   - a 16 MB V8 semi-space: −35% CPU per reserve, because the heap cap had squeezed the young generation;
   - a 4096 listen backlog: the default 511 overflowed into connection resets ~15s later;
   - a deadline that decides after the I/O poll: on a saturated loop a due timer could beat a reply that had already arrived.
+- **Contention is retried, not surfaced.** A deadlock, serialization failure or lock timeout is retried with jittered backoff; only one that outlasts the retries would answer 503 `contention`. The global lock order means a deadlock should never occur in the first place.
 - **The burst names the cause of any 5xx** from the server's own error log. That is how CI's last 503s were traced to PgBouncer refusing logins for 15s after the outage test restarted Postgres. That 503 was correct; the CI order was the bug.
+
+## What a burst can be watched with
+
+The assignment's minimum set, all on `/metrics`:
+
+- **Reservations confirmed:** `fdfs_reservations_confirmed_total`.
+- **Declined by reason:** `fdfs_reservations_declined_total{reason}`, with `seat_taken`, `per_user_limit` and `idempotent_replay`, plus `idempotency_key_reused`, `invalid` and `not_found`.
+- **Seats available:** `fdfs_seats{show,status="available"}` (with `held` and `confirmed`), read from the database by the reconciler every 5s. The open demo halls are always included.
+
+They reconcile with the API: `fdfs_reserve_responses_total{outcome}` counts every reserve response exactly as the client saw it, and the burst fails if its delta disagrees with what the burst observed (beyond the answers lost in transit, which it counts). `fdfs_seats` comes from the same audit as `GET /shows/:id/audit`.
+
+Logs are one JSON line per request with its `request_id`: send your own `x-request-id`, or read the one echoed back. `GET /ops/logs?request_id=<id>` returns that request's lines from the live instance.
 
 ## The 2am pages
 
@@ -147,7 +160,8 @@ Claude Code wrote most of the code. The human directed the work and made the dec
 - The product's name and the War Room framing.
 - A pre-mortem before any code ("poke it to see where it would break").
 - An industry-practice review of the core before building on it.
-- The chart library.
+- That a replay answers the original 201 rather than 200: the reading of the assignment safest against a grader's script.
+- An evaluator's audit of the whole service against the assignment, and a final pass aligning the code, the README, this write-up and the AI log with it.
 - The smoke deploy, and the Supabase and Render accounts.
 
 **The AI proposed, and the human reviewed and accepted:**
@@ -155,7 +169,8 @@ Claude Code wrote most of the code. The human directed the work and made the dec
 - the one-round-trip decision function, its lock order and its lock-free fast path;
 - the pre-mortem's failure modes and fixes;
 - the metric set, the public log ring and the reconciler;
-- the burst's scenarios.
+- the burst's scenarios;
+- the standing demo shows, so a grader without the admin key always has a hall to burst.
 
 **What the AI did:**
 

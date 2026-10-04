@@ -43,6 +43,11 @@ describe("POST /shows", () => {
     });
     expect(t.config.reservations.defaultPerUserLimit).toBe(4);
     expect(res.json().id).toMatch(/^[0-9a-f-]{36}$/);
+    // Every seat, available, in the order given: the same list GET /shows/:id then returns.
+    const seats = body.seats.map((label) => ({ label, status: "available" }));
+    expect(res.json().seats).toEqual(seats);
+    const read = await t.app.inject({ method: "GET", url: `/shows/${res.json().id}` });
+    expect(read.json().seats).toEqual(seats);
   });
 
   it("honours explicit per_user_limit, hold_ttl_seconds and ephemeral", async () => {

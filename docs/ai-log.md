@@ -55,7 +55,7 @@ Production still runs Node 22 in Docker.
 
 **Human:** directed the phase to start ("continue") and asked for trivial work to be delegated to Sonnet subagents.
 
-**Review (human-directed):** before building on the core, the human asked for it to be checked against industry practice. The AI researched Stripe/brandur idempotency keys, the IETF Idempotency-Key draft, the Ticketmaster hold design, and Postgres advisory-lock and MultiXact pitfalls, then compared them with the implementation. It found and fixed a hot-parent FK lock on the show row, proved first by a failing regression test. Status codes were aligned with the IETF draft (422 for key reuse), and two deviations were kept and documented, with reasons.
+**Review (human-directed):** before building on the core, the human asked for it to be checked against industry practice. The AI researched Stripe/brandur idempotency keys, the IETF Idempotency-Key draft, the Ticketmaster hold design, and Postgres advisory-lock and MultiXact pitfalls, then compared them with the implementation. It found and fixed a hot-parent FK lock on the show row, proved first by a failing regression test. Status codes were aligned with the IETF draft (422 for key reuse), and two deviations were kept and documented, with reasons. (Phase 9's evaluator audit moved key reuse back to 409, the status the assignment asks for.)
 
 ## Phase 2: Core engine II (lifecycle + audit)
 
@@ -135,7 +135,7 @@ Production still runs Node 22 in Docker.
 **Decisions made during the phase:**
 
 - The full test suite was not pointed at Supabase: it is the live database, and the suite's non-ephemeral test shows would clutter the live show list. CI already runs the suite on Postgres 17 and behind PgBouncer.
-- The 4k run's 422s were traced to the script reusing run 1's keys for a different show: correct engine behaviour, not a bug.
+- The 4k run's 422s (then the key-reuse status, 409 since Phase 9) were traced to the script reusing run 1's keys for a different show: correct engine behaviour, not a bug.
 
 **Human:** deployed the project to Render with the Supabase credentials and said to check whatever was needed and continue with the next phase.
 
@@ -170,6 +170,8 @@ Production still runs Node 22 in Docker.
 - Theme tokens are OKLCH and canvas needs concrete colors, so each one is resolved by painting a pixel.
 - Scroll and zoom are off on a live window, so phones can scroll the page past the charts.
 - One credit link on the page meets the Apache-2.0 NOTICE. The library's logo inside every plot covered data.
+
+Superseded in Phase 9: the War Room redesign went back to plain SVG charts and removed the library (see below).
 
 ## Phase 8: Burst + Stampede + tuning
 
@@ -233,6 +235,32 @@ Production still runs Node 22 in Docker.
 - Replays return 201, not 200 (the human chose this). It is the reading of the email that's safest against a grader's script, and it is how Stripe-style replays behave.
 - The live 20k burst is run by the human with the live admin key, after this redeploys.
 
+### Keyless reserves, the deadline cap and a 20k preset
+
+**AI implemented:**
+
+- A reserve without an `Idempotency-Key` now gets a fresh server key instead of a 400. It is booked or declined on its own, exactly like a keyed request, but a retry of it can't be recognised. Before this, a grader's keyless crowd would have produced zero bookings and thousands of 400s. An empty key is still a 400.
+- The DB deadline's cap went from 6 to 18 deadlines while the database is answering other calls. A full admission queue (8,000 in flight) takes ~65s to drain on the free instance, so a 20,000-at-once burst turned its tail into 503s at 60s.
+- A **Full · 20k** preset on the Stampede page, at the CLI's scale (~21,600 requests, 2,000 seats, 256 in flight), so a grader with the admin key needs nothing cloned.
+
+### War Room redesign
+
+After the first live 20k-scale burst (21,600 requests, PASS), the War Room had two problems. It lost the burst once its 5-minute window moved on or the free instance slept. And its seven-colour stacked chart buried bookings (7.6%) under `seat_taken` (91%).
+
+**AI implemented:**
+
+- `burst_runs` (migration 0006), `POST /ops/runs` (admin key; the server adds its own audit of the show as the report arrives) and `GET /ops/runs`. The burst and the simulator post their final report; the janitor keeps the newest 50.
+- A page that leads with a verdict line and the last burst's scorecard: every check, seats sold, where every request went, and a latency ruler.
+- Live traffic as three groups (booked, declined correctly, failed) with p50/p99 latency below, over 1, 5 or 10 minutes. The DB pool, event loop, memory, jobs and log tail moved under a folded Internals section.
+- Charts in plain SVG; `lightweight-charts` was removed.
+
+### Stampede form and shows list
+
+**AI implemented:**
+
+- The Stampede form as three numbered steps (admin key, scenario, optional fine-tuning), with presets as cards. A later pass cut its copy back to a name, a request count and one line per preset.
+- The UI's shows list now includes simulator shows. A simulator run creates a show the way the New show button does, so the list no longer hides those shows behind a toggle or labels them Burst. The API still hides ephemeral shows from `GET /shows` unless asked.
+
 ### Stampede over Render's edge
 
 **Human:** ran the browser Stampede against Render (2,000 seats, 256 in flight) and got five failed checks while the server audit was clean. Asked for the checker to be fixed.
@@ -247,3 +275,22 @@ Production still runs Node 22 in Docker.
   - "server stayed up": `/ops/summary` names the same instance and start time before and after the run.
 - The War Room's "Server errors" tile counts unanswered requests instead of every dropped connection. Runs recorded before this change still count every drop.
 - Tests replay each case against the real app through a lossy `fetch`: re-sent bookings, answers dropped after the server sent them, and declines duplicated beyond what the client can account for.
+
+### Alignment pass against the assignment
+
+**Human:** asked for the write-up and this log to be checked against the assignment and the code, and for everything to be aligned with the assignment.
+
+**AI:**
+
+- Found one gap in the code: `POST /shows` answered with the show and its counts but no seats. The assignment says it returns "every seat in available state". The 201 now carries `seats[{label, status}]`, the shape `GET /shows/:id` uses, and the test checks both. The test failed before the fix.
+- Fixed claims in `WRITEUP.md` that had drifted from the code:
+  - the deadline cap (18 deadlines, not six);
+  - the burst's checks ("every request answered" replaced "no network errors");
+  - expiry at `held_until <= now()`;
+  - which 503s exist (`contention` after retries, a drain).
+- Added to `WRITEUP.md`:
+  - the live 20k-scale burst;
+  - how the assignment's minimum metrics map onto `/metrics`, and how logs are traced by request id;
+  - the human's 201-replay decision.
+- Removed "the chart library" from the human-decided list, since that library is gone.
+- Brought `Plan.md`'s contract up to date: replay 201, key reuse 409, keyless reserves, SVG charts. Added this log's entries for the work after the evaluator audit.
