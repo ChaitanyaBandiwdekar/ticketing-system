@@ -101,7 +101,9 @@ export function Scorecard({
   const groups = groupCounts(r.outcomes);
   /** Responses that weren't an answer from a healthy server: 429 shed, 5xx, no answer. */
   const failed = groups.failed;
-  const broken = r.status["5xx"] + r.status.network;
+  // A connection dropped in transit and answered on retry is not a server error. Older runs
+  // didn't record which drops went unanswered, so they count every one.
+  const broken = r.status["5xx"] + (r.unanswered ?? r.status.network);
   const by = (key: string) =>
     Object.entries(r.outcomes)
       .filter(([o]) => OUTCOMES.find((s) => s.match(o))?.key === key)
@@ -265,7 +267,7 @@ export function Scorecard({
               {num(broken)}
             </>
           }
-          sub={`${num(r.status["5xx"])} 5xx · ${num(r.status.network)} network · ${num(r.status["429"])} shed with 429`}
+          sub={`${num(r.status["5xx"])} 5xx · ${r.unanswered === undefined ? `${num(r.status.network)} network` : `${num(r.unanswered)} unanswered · ${num(r.status.network)} dropped and retried`} · ${num(r.status["429"])} shed with 429`}
         />
       </div>
 

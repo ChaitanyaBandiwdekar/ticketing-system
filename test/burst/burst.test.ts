@@ -55,6 +55,8 @@ describe("burst against the real app", () => {
     expect(report.checks.map((c) => c.name)).toEqual(
       expect.arrayContaining([
         "no 5xx",
+        "every request answered",
+        "server stayed up",
         "no seat sold twice",
         "no user over the limit",
         "final map matches what was granted",
@@ -112,25 +114,50 @@ describe("burst against the real app", () => {
       expect(metrics.detail).toContain(`${resent} answers the server sent never arrived`);
     });
 
-    it("answers lost after the server sent them fail only 'no network errors'", async () => {
+    it("connections dropped in transit pass once every retry is answered", async () => {
       const base = await t.listen();
+      // Every 10th reserve drops: alternately before it leaves (the browser's "Failed to fetch"
+      // after a few ms) and after the server has answered it (the answer is lost).
       let n = 0;
-      let dropped = 0;
+      let before = 0;
+      let after = 0;
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        if (!isReserve(url, init) || ++n % 10) return real(url, init);
+        if ((before + after) % 2 === 0) {
+          before++;
+          throw new TypeError("Failed to fetch");
+        }
+        await (await real(url, init)).text();
+        after++;
+        throw new TypeError("Failed to fetch");
+      });
+
+      const report = await runBurst({ ...SMALL, base, adminKey: TEST_ADMIN_KEY });
+
+      expect(report.checks.filter((c) => !c.ok)).toEqual([]);
+      expect(report.status.network).toBe(before + after);
+      expect(report.unanswered).toBe(0);
+      const answered = report.checks.find((c) => c.name === "every request answered")!;
+      expect(answered.detail).toContain(`${before + after} connections dropped in transit after`);
+      expect(answered.detail).toContain("retried with the same key and answered");
+      const metrics = report.checks.find((c) => c.name === "metrics match observations")!;
+      expect(metrics.detail).toContain(`${after} answers the server sent never arrived`);
+    });
+
+    it("fails 'server stayed up' when the server restarts mid-run", async () => {
+      const base = await t.listen();
+      let summaries = 0;
       vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
         const res = await real(url, init);
-        if (!isReserve(url, init) || ++n % 10) return res;
-        await res.text();
-        dropped++;
-        throw new TypeError("fetch failed");
+        if (new URL(url).pathname !== "/ops/summary" || ++summaries === 1) return res;
+        const body = (await res.json()) as Record<string, unknown>;
+        return Response.json({ ...body, started_at: new Date().toISOString() });
       });
 
       const report = await runBurst({ ...SMALL, base, adminKey: TEST_ADMIN_KEY });
 
       const failed = report.checks.filter((c) => !c.ok).map((c) => c.name);
-      expect(failed).toEqual(["no network errors"]);
-      expect(report.status.network).toBe(dropped);
-      const metrics = report.checks.find((c) => c.name === "metrics match observations")!;
-      expect(metrics.detail).toContain(`${dropped} answers the server sent never arrived`);
+      expect(failed).toEqual(["server stayed up"]);
     });
 
     it("still fails when the metrics run ahead by more than was lost", async () => {

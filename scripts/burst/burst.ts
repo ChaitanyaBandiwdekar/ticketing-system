@@ -2,9 +2,9 @@
  * npm run burst -- <BASE_URL> [options]
  *
  * Fires the full first-day-first-show stampede (scripts/burst/core.ts) at a running FDFS and
- * exits non-zero if any guarantee broke: a 5xx, a network error, a seat sold twice, a user over
- * the limit, a broken idempotent retry, an unbalanced snapshot, a failed audit, or /metrics
- * disagreeing with what the burst saw.
+ * exits non-zero if any guarantee broke: a 5xx, a request never answered, a server restart, a
+ * seat sold twice, a user over the limit, a broken idempotent retry, an unbalanced snapshot, a
+ * failed audit, or /metrics disagreeing with what the burst saw.
  *
  * The admin key (POST /shows) comes from --admin-key or ADMIN_API_KEY.
  */
@@ -117,7 +117,11 @@ function print(r: BurstReport) {
   out.push(
     "  " +
       row(
-        ["5xx · network errors", `${n(r.status["5xx"])} · ${n(r.status.network)}`, ""],
+        [
+          "5xx · dropped · unanswered",
+          `${n(r.status["5xx"])} · ${n(r.status.network)} · ${n(r.unanswered)}`,
+          "",
+        ],
         [24, 8, 7],
       ),
   );

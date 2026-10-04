@@ -19,6 +19,8 @@
  *    - spoof:    a body `user_id` naming somebody else;
  *    - foreign:  cancelling another user's reservation.
  *    429 (shed) and network errors are retried with the same key, as a real client would.
+ *    A connection dropped in transit is not a broken guarantee if the retry is answered; a
+ *    request still unanswered at the end, or a server that restarted mid-run, is.
  * 3. Meanwhile polls GET /shows/:id: every snapshot must reconcile, and sold never goes down.
  * 4. Afterwards compares the final seat map with every reservation it was granted, runs the
  *    audit, and diffs /metrics against what it observed, outcome by outcome.
@@ -146,6 +148,8 @@ export type BurstReport = {
   scenarios: Record<Scenario, Record<string, number>>;
   status: { "2xx": number; "4xx": number; "429": number; "5xx": number; network: number };
   retries: number;
+  /** Reserves and cancels still without an answer after every retry. */
+  unanswered: number;
   /**
    * Requests that reached the server twice through one fetch, with no failure the client saw: the
    * browser or an edge proxy re-sent it after the connection dropped. The first copy booked, its
@@ -415,7 +419,12 @@ export async function runBurst(
   let retries = 0;
   let resent = 0;
   /** Reserve attempts that got no answer: the server may have answered (and counted) them. */
+  let droppedAttempts = 0;
+  /** Logical requests (reserve, cancel) with no answer even after every retry. */
   let unanswered = 0;
+  /** How long failed connections took to fail: a few ms means it never left the browser/edge. */
+  let netMin = Infinity;
+  let netMax = 0;
   let sent = 0;
   /** A few distinct network-error causes, for the report. */
   const networkErrors: string[] = [];
@@ -473,6 +482,8 @@ export async function runBurst(
           `${why} after ${Math.round(ms)}ms (${method} ${path.replace(/[0-9a-f-]{36}/, ":id")})`,
         );
       }
+      netMin = Math.min(netMin, ms);
+      netMax = Math.max(netMax, ms);
       return { status: 0, outcome: "network_error", body: why, ms, requestId };
     }
   }
@@ -486,7 +497,7 @@ export async function runBurst(
     else httpStatus["2xx"]++;
     if (reserve) {
       reserveRequests++;
-      if (r.status === 0) unanswered++;
+      if (r.status === 0) droppedAttempts++;
       else {
         bump(outcomes, r.outcome);
         latencies.push(r.ms);
@@ -524,7 +535,10 @@ export async function runBurst(
       // server's pace, so be patient. A 503 still fails "no 5xx".
       const retryable = r.status === 429 || r.status === 503 || r.status === 0;
       r.afterFailure = failedBefore;
-      if (!retryable || attempt >= MAX_ATTEMPTS - 1 || signal?.aborted) return r;
+      if (!retryable || attempt >= MAX_ATTEMPTS - 1 || signal?.aborted) {
+        if (r.status === 0) unanswered++;
+        return r;
+      }
       if (r.status !== 429) failedBefore = true;
       retries++;
       const backoff = Math.max((r.retryAfter ?? 0) * 1000, Math.min(15_000, 500 * 2 ** attempt));
@@ -573,6 +587,17 @@ export async function runBurst(
   const takeUsers = (n: number) => users.slice(nextUser, (nextUser += n));
   let nextExact = 0;
   const takeSeats = (n: number) => seats.exact.slice(nextExact, (nextExact += n));
+
+  // Which server process answered: a restart mid-run is a crash, whatever the client saw.
+  type Instance = { instance: string; started_at: string };
+  const instanceNow = async (): Promise<Instance | null> => {
+    const r = await send("GET", "/ops/summary");
+    const b = r.body as Partial<Instance> | null;
+    return r.status === 200 && b?.instance && b.started_at
+      ? { instance: b.instance, started_at: b.started_at }
+      : null;
+  };
+  const serverBefore = await instanceNow();
 
   let metricsBefore: Map<string, number> | null = null;
   if (o.metrics) {
@@ -853,6 +878,8 @@ export async function runBurst(
   const audit =
     auditR.status === 200 ? (auditR.body as { ok: boolean; violations: unknown[] }) : null;
 
+  const serverAfter = await instanceNow();
+
   let metrics: BurstReport["metrics"] = null;
   if (metricsBefore) {
     const m = await fetch(`${base}/metrics`, { signal }).catch(() => null);
@@ -897,12 +924,37 @@ export async function runBurst(
     httpStatus["5xx"] === 0,
     `${httpStatus["5xx"]} server errors (polls included)${causes}`,
   );
+  // A dropped connection is retried with the same key, as the API asks; the idempotency key
+  // makes that safe. What breaks a guarantee is a request that never gets an answer.
+  const span = (a: number, b: number) =>
+    Math.round(a) === Math.round(b) ? `${Math.round(a)}ms` : `${Math.round(a)}–${Math.round(b)}ms`;
   check(
-    "no network errors",
-    httpStatus.network === 0,
-    `${httpStatus.network} failed connections` +
-      (networkErrors.length ? `: ${networkErrors.join("; ")}` : ""),
+    "every request answered",
+    unanswered === 0,
+    (unanswered
+      ? `${unanswered} still unanswered after ${MAX_ATTEMPTS} tries; `
+      : httpStatus.network
+        ? ""
+        : "no connection dropped") +
+      (httpStatus.network
+        ? `${httpStatus.network} connections dropped in transit after ${span(netMin, netMax)}` +
+          (unanswered ? "" : ", each reserve and cancel retried with the same key and answered") +
+          (networkErrors.length ? `: ${networkErrors.join("; ")}` : "")
+        : ""),
   );
+  if (serverBefore && serverAfter) {
+    const same =
+      serverBefore.instance === serverAfter.instance &&
+      serverBefore.started_at === serverAfter.started_at;
+    check(
+      "server stayed up",
+      same,
+      same
+        ? `instance ${serverBefore.instance}, up since ${serverBefore.started_at}`
+        : `${serverBefore.instance} (up since ${serverBefore.started_at}) → ` +
+            `${serverAfter.instance} (up since ${serverAfter.started_at})`,
+    );
+  }
 
   // No seat sold twice: the reservations granted to us never overlap.
   const owner = new Map<string, string>();
@@ -1022,7 +1074,7 @@ export async function runBurst(
     const behind = metrics.filter((m) => m.delta < m.observed);
     const ahead = metrics.filter((m) => m.delta > m.observed);
     const lost = ahead.reduce((a, m) => a + m.delta - m.observed, 0);
-    const mayLose = unanswered + resent;
+    const mayLose = droppedAttempts + resent;
     const off = [...behind, ...(lost > mayLose ? ahead : [])];
     const lostNote =
       `${lost} answer${lost === 1 ? "" : "s"} the server sent never arrived ` +
@@ -1053,6 +1105,7 @@ export async function runBurst(
     scenarios: scen,
     status: httpStatus,
     retries,
+    unanswered,
     resent,
     reserveRequests,
     throughput: reserveRequests / Math.max(0.001, durationMs / 1000),
