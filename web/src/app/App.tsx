@@ -9,6 +9,7 @@ import { LoginPage } from "../pages/LoginPage";
 import { NewShowPage } from "../pages/NewShowPage";
 import { ShowPage } from "../pages/ShowPage";
 import { ShowsPage } from "../pages/ShowsPage";
+import { WarRoomPage } from "../pages/WarRoomPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -47,6 +48,7 @@ export function App() {
               <Route path="shows/new" element={<NewShowPage />} />
               <Route path="shows/:id" element={<ShowPage />} />
               <Route path="bookings" element={<BookingsPage />} />
+              <Route path="war-room" element={<WarRoomPage />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </AppShell>

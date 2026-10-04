@@ -2,7 +2,7 @@ import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { afterAll, beforeAll, inject } from "vitest";
 import { loadConfig, type Config } from "../../server/src/config";
 import { createSql, type Sql } from "../../server/src/db/pool";
-import { buildApp } from "../../server/src/http/app";
+import { buildApp, type AppDeps } from "../../server/src/http/app";
 import { Readiness } from "../../server/src/http/readiness";
 import { seatRow } from "./engine";
 import { uniq } from "./db";
@@ -25,9 +25,13 @@ export type TestApp = {
 
 /**
  * The real app on the run's test database, built once per file. Snapshot cache off so reads see
- * writes immediately; logging silent. `env` overrides any config variable.
+ * writes immediately; logging silent. `env` overrides any config variable; `deps` supplies extra
+ * app dependencies (e.g. a logger writing into a test's log buffer).
  */
-export function useTestApp(env: Record<string, string> = {}): TestApp {
+export function useTestApp(
+  env: Record<string, string> = {},
+  deps: Pick<AppDeps, "logger" | "logBuffer"> = {},
+): TestApp {
   const config = loadConfig({
     NODE_ENV: "test",
     LOG_LEVEL: "silent",
@@ -46,7 +50,7 @@ export function useTestApp(env: Record<string, string> = {}): TestApp {
   } as TestApp;
 
   beforeAll(async () => {
-    t.app = await buildApp({ config, sql, readiness: new Readiness(readySql) });
+    t.app = await buildApp({ config, sql, readiness: new Readiness(readySql), ...deps });
     await t.app.ready();
   });
   afterAll(async () => {

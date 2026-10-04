@@ -129,6 +129,8 @@ export const reservationRoutes =
   (ctx: AppContext): FastifyPluginAsync =>
   async (app) => {
     const { sql, bus, db } = ctx;
+    const { metrics } = ctx.obs;
+    const retry = { onRetry: (sqlstate: string) => metrics.dbRetry(sqlstate) };
     // Identity comes from the token only, resolved before the body is even validated.
     const authenticate = async (request: FastifyRequest) => {
       request.userId = ctx.auth.userFrom(request);
@@ -161,11 +163,12 @@ export const reservationRoutes =
         const claimed = request.body.user_id;
         const spoofed = claimed !== undefined && claimed !== userId;
         if (spoofed) {
+          metrics.spoof();
           request.log.warn({ user: userId, claimed_user: claimed }, "identity_spoof_ignored");
         }
 
         const o = await db(
-          reserve(sql, { showId, userId, seats: request.body.seats, idempotencyKey: key }),
+          reserve(sql, { showId, userId, seats: request.body.seats, idempotencyKey: key }, retry),
         );
         request.logCtx = {
           user: userId,
@@ -173,6 +176,7 @@ export const reservationRoutes =
           seats: request.body.seats,
           outcome: o.outcome,
           path: o.path,
+          ...(o.outcome === "created" && { state: o.reservation.status }),
           ...(spoofed && { spoof_ignored: true }),
         };
         // After commit: the engine call is one autocommitted statement.
@@ -196,7 +200,8 @@ export const reservationRoutes =
         },
         async (request, reply) => {
           const reservationId = request.params.id.toLowerCase();
-          const o = await db(fn(sql, { reservationId, userId: request.userId }));
+          const o = await db(fn(sql, { reservationId, userId: request.userId }, retry));
+          metrics.lifecycle(o);
           request.logCtx = {
             user: request.userId,
             reservation: reservationId,

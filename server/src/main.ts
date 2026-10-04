@@ -11,7 +11,6 @@
  *   4. DB pools drain; exit 0
  * A watchdog exits non-zero if draining hangs, so the platform never has to SIGKILL us mid-write.
  */
-import { pino } from "pino";
 import { loadConfig, loadDotEnv } from "./config";
 import { migrate } from "./db/migrate";
 import { createSql } from "./db/pool";
@@ -20,14 +19,17 @@ import { buildApp } from "./http/app";
 import { isDbUnavailable } from "./http/errors";
 import { Readiness } from "./http/readiness";
 import { createJobs } from "./jobs";
-import { loggerOptions } from "./obs/logger";
+import { LogBuffer } from "./obs/logbuffer";
+import { createLogger } from "./obs/logger";
 import { EventBus } from "./realtime/bus";
 
 const DRAIN_TIMEOUT_MS = 25_000;
 
 loadDotEnv();
 const config = loadConfig();
-const log = pino(loggerOptions(config.logLevel));
+// One logger for the whole process: stdout for the platform, plus the ring behind /ops/logs.
+const logBuffer = new LogBuffer();
+const log = createLogger(config.logLevel, { buffer: logBuffer });
 
 /** The database may come up after us (compose, a cold Supabase): retry connecting, not forever. */
 async function migrateWithRetry(attempts = 15, delayMs = 2_000): Promise<void> {
@@ -54,8 +56,8 @@ async function main(): Promise<void> {
   const readySql = createSql(config.db.url, { max: 1, appName: "fdfs-ready" });
   const readiness = new Readiness(readySql);
   const bus = new EventBus();
-  const app = await buildApp({ config, sql, readiness, bus });
-  const jobs = createJobs({ config, sql, bus, hub: app.realtime.hub, log });
+  const app = await buildApp({ config, sql, readiness, bus, logger: log, logBuffer });
+  const jobs = createJobs({ config, sql, bus, hub: app.realtime.hub, log, obs: app.obs });
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {

@@ -74,4 +74,16 @@ CC="$(curl -sS -o /dev/null -w '%header{cache-control}' "$BASE$JS")"
 call GET /app/shows/new 200
 grep -q '<div id="root">' "$TMP" || fail "client route did not get the UI shell"
 
+# Observability: Prometheus exposition counted this run's reserves, nothing failed, and the
+# public log tail can find the spoofed request's warning.
+call GET /metrics 200
+grep -Eq '^fdfs_reserve_responses_total\{outcome="created"\} [1-9]' "$TMP" ||
+  fail "/metrics has no created reserves"
+grep -Eq '^fdfs_invariant_violations_total 0$' "$TMP" || fail "invariant violations are not 0"
+call GET /ops/summary 200
+[[ "$(jq -r .invariant_ok "$TMP")" == "true" ]] || fail "ops summary: invariant not ok"
+call GET "/ops/logs?level=warn&limit=2000" 200
+jq -e '[.lines[] | select(.msg == "identity_spoof_ignored")] | length > 0' "$TMP" >/dev/null ||
+  fail "log tail has no identity_spoof_ignored line"
+
 echo "smoke: all good"

@@ -48,6 +48,23 @@
   --color-seat-mine: oklch(0.7 0.16 262);
   --color-seat-focus: oklch(0.96 0 0);
 
+  /*
+   * Charts (War Room). Categorical identity in a fixed order, validated on the surface
+   * (dataviz validate_palette: worst adjacent CVD dE 8.4, normal-vision 19.3, all >= 3:1).
+   * Latency quantiles are one ordinal blue ramp, brightest for the tail that matters (p99).
+   * Status meaning (invariant, 5xx) keeps the success/danger tokens above, never these.
+   */
+  --color-series-1: #3987e5;
+  --color-series-2: #d95926;
+  --color-series-3: #199e70;
+  --color-series-4: #c98500;
+  --color-series-5: #d55181;
+  --color-series-6: #9085e9;
+  --color-series-7: #e66767;
+  --color-ramp-1: #9ec5f4;
+  --color-ramp-2: #5598e7;
+  --color-ramp-3: #256abf;
+
   --radius-sm: 0.25rem;
   --radius-md: 0.4rem;
   --radius-lg: 0.6rem;

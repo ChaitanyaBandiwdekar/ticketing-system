@@ -1,0 +1,11 @@
+# Provisioned for the compose `obs` profile; the dashboard refers to this uid.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: fdfs-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 5s

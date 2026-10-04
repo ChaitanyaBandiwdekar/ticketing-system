@@ -103,6 +103,10 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <span className="hidden sm:inline">My bookings</span>
               </NavItem>
             )}
+            <NavItem to="/war-room">
+              <span className="sm:hidden">Ops</span>
+              <span className="hidden sm:inline">War Room</span>
+            </NavItem>
           </nav>
           <div className="ml-auto flex items-center gap-4">
             <Readiness />

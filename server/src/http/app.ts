@@ -7,14 +7,24 @@
  * - admission control on everything except ops routes (health checks must never be shed) and
  *   streams (long-lived; they have their own connection cap in the hub)
  * - ONE log line per request (Fastify's default is two), enriched by handlers via `logCtx`
+ * - metrics recorded once per response in the same hook (obs/metrics.ts)
  * - every error mapped to the one error shape; only genuine bugs become 500
  */
 import { randomUUID } from "node:crypto";
-import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, {
+  LogController,
+  type FastifyBaseLogger,
+  type FastifyInstance,
+  type FastifyRequest,
+} from "fastify";
+import type { Logger } from "pino";
 import type { Config } from "../config";
 import { withDeadline } from "../db/deadline";
 import type { Sql } from "../db/pool";
-import { loggerOptions } from "../obs/logger";
+import { LogBuffer } from "../obs/logbuffer";
+import { createLogger } from "../obs/logger";
+import { Metrics, type ReserveState } from "../obs/metrics";
+import { OpsHub } from "../obs/opshub";
 import { EventBus } from "../realtime/bus";
 import { StreamHub } from "../realtime/hub";
 import { Admission } from "./admission";
@@ -23,6 +33,7 @@ import { ApiError, sendError, toApiError } from "./errors";
 import type { Readiness } from "./readiness";
 import { authRoutes } from "./routes/auth";
 import { healthRoutes } from "./routes/health";
+import { opsRoutes } from "./routes/ops";
 import { reservationRoutes } from "./routes/reservations";
 import { showRoutes } from "./routes/shows";
 import { streamRoutes } from "./routes/stream";
@@ -42,9 +53,12 @@ declare module "fastify" {
     logCtx?: Record<string, unknown>;
     /** Set once a stream took over the socket; the stream writes its own log line on close. */
     streamed: boolean;
+    /** The error code this request was answered with, if any (set by sendError). */
+    errorCode?: string;
   }
   interface FastifyInstance {
     realtime: { bus: EventBus; hub: StreamHub };
+    obs: Observability;
   }
 }
 
@@ -56,13 +70,20 @@ export type AppDeps = {
   logLevel?: Config["logLevel"];
   /** Seat-change events; shared with the background jobs. Created if omitted. */
   bus?: EventBus;
+  /** The process logger (main.ts shares it with the jobs). Created if omitted. */
+  logger?: Logger;
+  /** The ring buffer `logger` also writes to, behind /ops/logs. Created if omitted. */
+  logBuffer?: LogBuffer;
 };
+
+export type Observability = { metrics: Metrics; logs: LogBuffer; ops: OpsHub };
 
 export type AppContext = AppDeps & {
   auth: Auth;
   admission: Admission;
   bus: EventBus;
   hub: StreamHub;
+  obs: Observability;
   /** Every request-path DB call goes through this: a deadline, then 503 instead of a hang. */
   db: <T>(work: Promise<T>) => Promise<T>;
 };
@@ -76,11 +97,16 @@ function isQuiet(request: FastifyRequest): boolean {
   );
 }
 const KEEP_ALIVE_MS = 65_000;
+const RESERVE_ROUTE = "/shows/:id/reserve";
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { config } = deps;
+  const level = deps.logLevel ?? config.logLevel;
+  const logs = deps.logBuffer ?? new LogBuffer();
+  const metrics = new Metrics(config.db.poolMax);
   const app = Fastify({
-    logger: loggerOptions(deps.logLevel ?? config.logLevel),
+    // A pino Logger is a FastifyBaseLogger; the cast keeps the app's default instance type.
+    loggerInstance: (deps.logger ?? createLogger(level, { buffer: logs })) as FastifyBaseLogger,
     // Fastify's own two lines per request are off; onResponse below writes one richer line.
     logController: new LogController({
       disableRequestLogging: true,
@@ -104,6 +130,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.decorateRequest("userId", "");
   app.decorateRequest("logCtx", undefined);
   app.decorateRequest("streamed", false);
+  app.decorateRequest("errorCode", undefined);
 
   const bus = deps.bus ?? new EventBus();
   bus.onListenerError = (err) => app.log.error({ err }, "event listener failed");
@@ -114,16 +141,35 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     app.log,
   );
   app.decorate("realtime", { bus, hub });
+  const admission = new Admission(config.admission.maxQueue);
+  const ops = new OpsHub(metrics, logs, {
+    pool_max: config.db.poolMax,
+    admission_capacity: config.admission.maxQueue,
+    stream_capacity: config.realtime.maxClients,
+  });
+  const obs: Observability = { metrics, logs, ops };
+  app.decorate("obs", obs);
+  metrics.bind({
+    admission: () => admission.stats(),
+    streams: () => hub.stats(),
+    ready: () => deps.readiness.peek(),
+  });
+  ops.bind({ streams: () => hub.stats(), ready: () => deps.readiness.peek() });
   // Streams never finish on their own: end them first, or close() would wait for them forever.
-  app.addHook("preClose", async () => hub.close());
+  app.addHook("preClose", async () => {
+    hub.close();
+    ops.close();
+  });
+  app.addHook("onClose", async () => metrics.close());
 
   const ctx: AppContext = {
     ...deps,
     auth: createAuth(config.auth),
-    admission: new Admission(config.admission.maxQueue),
+    admission,
     bus,
     hub,
-    db: (work) => withDeadline(work, config.db.requestTimeoutMs),
+    obs,
+    db: (work) => withDeadline(metrics.trackDb(work), config.db.requestTimeoutMs),
   };
 
   app.addHook("onRequest", async (request, reply) => {
@@ -131,6 +177,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     if (isQuiet(request) || request.routeOptions.config.stream) return;
     const release = ctx.admission.tryEnter();
     if (!release) {
+      metrics.shed();
       throw new ApiError(
         429,
         "overloaded",
@@ -148,9 +195,22 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.addHook("onResponse", async (request, reply) => {
     if (isQuiet(request) || request.streamed) return;
     const status = reply.statusCode;
+    const route = request.routeOptions.url ?? "(unmatched)";
+    const seconds = reply.elapsedTime / 1000;
+    metrics.http(route, status, seconds);
+    if (route === RESERVE_ROUTE && request.method === "POST") {
+      // Every reserve response maps to exactly one outcome, named as the client sees it: the
+      // error code of any non-2xx (domain declines, 401, 400, 429, 503...), else created/replayed.
+      const outcome = request.errorCode ?? request.logCtx?.outcome ?? `http_${status}`;
+      metrics.reserveResponse(
+        String(outcome),
+        seconds,
+        request.logCtx?.state as ReserveState | undefined,
+      );
+    }
     const line = {
       method: request.method,
-      route: request.routeOptions.url ?? "(unmatched)",
+      route,
       status,
       ms: Math.round(reply.elapsedTime * 10) / 10,
       ...request.logCtx,
@@ -176,6 +236,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(showRoutes(ctx));
   await app.register(reservationRoutes(ctx));
   await app.register(streamRoutes(ctx));
+  await app.register(opsRoutes(ctx));
   await app.register(webRoutes(ctx));
   return app;
 }

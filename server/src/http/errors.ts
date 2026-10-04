@@ -48,6 +48,7 @@ export function errorBody(request: FastifyRequest, err: ApiError) {
 }
 
 export function sendError(request: FastifyRequest, reply: FastifyReply, err: ApiError) {
+  request.errorCode = err.code;
   for (const [k, v] of Object.entries(err.headers)) reply.header(k, v);
   return reply.code(err.statusCode).send(errorBody(request, err));
 }

@@ -1,6 +1,8 @@
 /** Wires the background jobs into the server lifecycle (main.ts starts them after listen). */
 import type { Config } from "../config";
 import type { Sql } from "../db/pool";
+import type { Metrics } from "../obs/metrics";
+import type { OpsHub } from "../obs/opshub";
 import type { EventBus } from "../realtime/bus";
 import type { HubLog, StreamHub } from "../realtime/hub";
 import { createJanitor } from "./janitor";
@@ -16,15 +18,20 @@ export function createJobs(deps: {
   bus: EventBus;
   hub: StreamHub;
   log: HubLog;
+  /** When given, job outcomes feed /metrics and the War Room. */
+  obs?: { metrics: Metrics; ops: OpsHub };
 }) {
-  const { config, sql, bus, hub, log } = deps;
-  const sweeper = createSweeper(sql, bus);
+  const { config, sql, bus, hub, log, obs } = deps;
+  const sweeper = createSweeper(sql, bus, (seats, expired) => obs?.metrics.sweep(seats, expired));
   const reconciler = createReconciler({
     sql,
     bus,
     log,
     watchedShows: () => hub.watchedShows(),
-    onReport: (report, at) => hub.publishAudit(report, at),
+    onReport: (report, at) => {
+      obs?.metrics.audit(report);
+      hub.publishAudit(report, at);
+    },
   });
   const janitor = createJanitor(sql, config.jobs, log, (ids) => reconciler.forget(ids));
 
@@ -33,6 +40,13 @@ export function createJobs(deps: {
     new Periodic("reconciler", config.jobs.reconcileIntervalMs, reconciler.tick, log),
     new Periodic("janitor", config.jobs.janitorIntervalMs, janitor.tick, log),
   ];
+
+  if (obs) {
+    const audits = () => reconciler.latest.values();
+    const jobs = () => runners;
+    obs.metrics.bind({ audits, jobs });
+    obs.ops.bind({ audits, jobs });
+  }
 
   return {
     sweeper,

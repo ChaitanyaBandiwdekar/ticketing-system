@@ -1,0 +1,128 @@
+# The 2am pages. `severity: page` wakes someone; `severity: ticket` can wait for the morning.
+# Each alert says what is wrong for users, not just which number moved. CI validates this file
+# and ops/prometheus.yml with `promtool check config`.
+groups:
+  - name: fdfs-correctness
+    rules:
+      - alert: FDFSInvariantViolation
+        # The one number that must read 0 forever: a seat sold twice, an orphaned seat, a wrong
+        # amount or a user over the limit. Fires on the first violation, no waiting.
+        expr: increase(fdfs_invariant_violations_total[5m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Seat invariant violated on {{ $labels.instance }}"
+          description: >-
+            The reconciler's audit found {{ $value | humanize }} violation(s) in 5 minutes.
+            Freeze sales for the show (GET /ops/summary lists the audited shows), then read the
+            `invariant_violation` log lines (GET /ops/logs?level=error).
+
+      - alert: FDFSServerErrors
+        # Domain declines are 4xx by design; any 5xx means the client can't tell what happened.
+        expr: sum by (instance) (rate(fdfs_http_responses_total{status_class="5xx"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "5xx responses on {{ $labels.instance }}"
+          description: >-
+            {{ $value | humanize }} 5xx/s for over a minute. 503 contention / db_unavailable mean
+            the database is struggling; 500 means a bug. Filter /ops/logs?level=error.
+
+  - name: fdfs-availability
+    rules:
+      - alert: FDFSTargetDown
+        expr: up{job=~"fdfs.*"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.instance }} is not answering /metrics"
+          description: The process is down or wedged. Render restarts it on failed /healthz checks.
+
+      - alert: FDFSNotReady
+        # /readyz fails closed: reservations are being refused while the database is unreachable.
+        expr: fdfs_ready == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.instance }} is not ready (database unreachable or draining)"
+          description: >-
+            Readiness has failed for over a minute, so every reserve answers 503. Check the
+            Supabase project (paused after 7 idle days on the free tier?) and the pooler.
+
+      - alert: FDFSSweeperStalled
+        # Lapsed holds still read as available (expiry is derived from DB time), so correctness
+        # holds; but live seat maps stop flipping back and held seats look sold.
+        expr: time() - fdfs_job_last_success_timestamp_seconds{job="sweeper"} > 30
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Hold sweeper has not completed a tick for {{ $value | humanizeDuration }}"
+          description: Seat maps will show lapsed holds as held. See `job tick failed` in /ops/logs.
+
+      - alert: FDFSReconcilerStalled
+        # Without the reconciler nobody is checking the invariant.
+        expr: time() - fdfs_job_last_success_timestamp_seconds{job="reconciler"} > 120
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Invariant reconciler stalled for {{ $value | humanizeDuration }}"
+          description: The invariant is unverified until it recovers. See `job tick failed` in /ops/logs.
+
+  - name: fdfs-saturation
+    rules:
+      - alert: FDFSReserveLatencyHigh
+        # Free-tier SLO: p99 of reserve under 5s (0.1 CPU; slow is fine, 5xx is not).
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (instance, le) (rate(fdfs_reservation_duration_seconds_bucket[5m]))) > 5
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Reserve p99 {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+          description: Over the 5s SLO for 10 minutes. Look at pool saturation and event-loop lag.
+
+      - alert: FDFSPoolSaturated
+        # More DB calls in flight than connections: requests are queueing for the pool.
+        expr: max_over_time(fdfs_db_calls_in_flight[1m]) > on (instance) fdfs_db_pool_max
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "DB pool saturated on {{ $labels.instance }} for 5 minutes"
+          description: >-
+            Requests wait for a connection. Raise DB_POOL_MAX if the pooler has headroom, or
+            scale out instances.
+
+      - alert: FDFSShedding
+        # Admission control is refusing requests with 429: the instance is past MAX_QUEUE.
+        expr: increase(fdfs_admission_shed_total[5m]) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.instance }} shed {{ $value | humanize }} requests with 429"
+          description: The instance is at capacity. Scale out or raise MAX_QUEUE if memory allows.
+
+      - alert: FDFSEventLoopLag
+        expr: nodejs_eventloop_lag_p99_seconds > 0.5
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Event-loop p99 lag {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+          description: The process is CPU-bound; every request waits behind it.
+
+      - alert: FDFSMemoryHigh
+        # The free instance has 512 MB and the heap is capped at 384 MB.
+        expr: process_resident_memory_bytes > 450 * 1024 * 1024
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "RSS {{ $value | humanize1024 }}B on {{ $labels.instance }}"
+          description: Close to the 512 MB limit; an OOM kill would drop every in-flight request.

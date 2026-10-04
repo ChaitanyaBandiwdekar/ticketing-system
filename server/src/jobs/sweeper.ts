@@ -14,7 +14,11 @@ const MAX_ROUNDS_PER_TICK = 20;
 
 export type SweeperStats = { seatsReleased: number; holdsExpired: number };
 
-export function createSweeper(sql: Sql, bus: EventBus) {
+export function createSweeper(
+  sql: Sql,
+  bus: EventBus,
+  onSweep: (seatsReleased: number, holdsExpired: number) => void = () => {},
+) {
   const stats: SweeperStats = { seatsReleased: 0, holdsExpired: 0 };
   const tick = async (): Promise<void> => {
     for (let round = 0; round < MAX_ROUNDS_PER_TICK; round++) {
@@ -26,6 +30,7 @@ export function createSweeper(sql: Sql, bus: EventBus) {
       }
       stats.seatsReleased += seats;
       stats.holdsExpired += expired;
+      onSweep(seats, expired);
       if (seats < BATCH && expired < BATCH) return;
     }
   };

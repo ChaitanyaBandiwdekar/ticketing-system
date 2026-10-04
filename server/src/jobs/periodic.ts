@@ -14,6 +14,8 @@ export class Periodic {
   private failures = 0;
   ticks = 0;
   lastError: string | null = null;
+  /** Epoch ms of the last tick that completed without throwing. */
+  lastSuccessAt: number | null = null;
 
   constructor(
     readonly name: string,
@@ -35,6 +37,7 @@ export class Periodic {
         if (this.failures > 0) this.log.info({ job: this.name }, "job recovered");
         this.failures = 0;
         this.lastError = null;
+        this.lastSuccessAt = Date.now();
       })
       .catch((err: unknown) => {
         this.failures++;
@@ -46,6 +49,10 @@ export class Periodic {
         this.running = null;
       });
     return this.running;
+  }
+
+  get consecutiveFailures(): number {
+    return this.failures;
   }
 
   async stop(): Promise<void> {

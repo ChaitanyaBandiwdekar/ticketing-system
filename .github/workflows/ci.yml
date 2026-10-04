@@ -49,12 +49,30 @@ jobs:
       JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
     steps:
       - uses: actions/checkout@v5
+      - name: Validate Prometheus config and alert rules
+        run: |
+          docker run --rm --entrypoint promtool             -v "$PWD/ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro"             -v "$PWD/ops/alerts.yml:/etc/prometheus/alerts.yml:ro"             prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
+      - name: Validate compose file (including the obs profile)
+        run: docker compose --profile obs config --quiet
       - name: Build image
         run: docker compose build app
       - name: Start stack (Postgres 17 + PgBouncer + app)
         run: docker compose up -d --wait --wait-timeout 180
       - name: Smoke test through PgBouncer
         run: scripts/smoke.sh http://localhost:8080 "$ADMIN_API_KEY"
+      - name: Prometheus scrapes the app (obs profile)
+        run: |
+          docker compose --profile obs up -d --wait --wait-timeout 120 prometheus
+          for i in $(seq 1 30); do
+            up="$(curl -s 'http://localhost:9090/api/v1/query?query=up%7Bjob%3D%22fdfs%22%7D' | jq -r '.data.result[0].value[1] // empty')"
+            [ "$up" = "1" ] && echo "prometheus: fdfs target up" && break
+            sleep 2
+          done
+          test "$up" = "1"
+          rules="$(curl -s http://localhost:9090/api/v1/rules | jq '[.data.groups[].rules[]] | length')"
+          echo "alert rules loaded: $rules"
+          test "$rules" -ge 10
+          docker compose --profile obs stop prometheus
       - name: Fail closed when the database disappears, recover when it returns
         run: scripts/ci/fail-closed.sh http://localhost:8080
       - name: Smoke again after recovery

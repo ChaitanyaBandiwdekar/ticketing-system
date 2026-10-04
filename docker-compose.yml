@@ -55,3 +55,30 @@ services:
       pgbouncer: { condition: service_started }
     ports: ["${APP_PORT:-8080}:8080"]
     stop_grace_period: 30s
+
+  # ---- Observability profile: `docker compose --profile obs up -d` ----
+  # Prometheus on :9090 scrapes the app and evaluates ops/alerts.yml; Grafana on :3000 opens the
+  # provisioned "FDFS overview" dashboard (anonymous read-only; admin password below is local-only).
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: [obs]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/alerts.yml:/etc/prometheus/alerts.yml:ro
+    depends_on: [app]
+    ports: ["${PROMETHEUS_PORT:-9090}:9090"]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    profiles: [obs]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fdfs.json
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+    ports: ["${GRAFANA_PORT:-3000}:3000"]

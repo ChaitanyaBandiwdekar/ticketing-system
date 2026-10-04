@@ -24,6 +24,12 @@ export class Readiness {
     this.draining = true;
   }
 
+  /** The last probe's verdict without probing (null before the first probe). For metrics. */
+  peek(): boolean | null {
+    if (this.draining) return false;
+    return this.cached?.state.ready ?? null;
+  }
+
   async check(): Promise<ReadyState> {
     if (this.draining) return { ready: false, reason: "draining" };
     const now = Date.now();
