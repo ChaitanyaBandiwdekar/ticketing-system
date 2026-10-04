@@ -126,7 +126,10 @@ export const runRoutes =
       {
         // Authenticate before validating: no credentials -> 401, never a 400 that leaks the schema.
         onRequest: async (request) => ctx.auth.requireAdmin(request),
-        bodyLimit: 64 * 1024,
+        // Admin-only and authenticated before the body is read. Roomy because burst copies built
+        // before the report was slimmed send the show's whole seat list (~150 KB for 2,000 seats);
+        // the schema drops it.
+        bodyLimit: 1024 * 1024,
         schema: { body: reportSchema },
       },
       async (request, reply) => {

@@ -303,7 +303,8 @@ async function runBurst(input) {
       `could not create the show: HTTP ${created.status} ${created.outcome}` + (created.status === 401 || created.status === 403 ? " (check the admin key)" : "")
     );
   }
-  const show = created.body;
+  const made = created.body;
+  const show = { id: made.id, name: made.name, total_seats: made.total_seats };
   o.onShow?.(show);
   const showPath = `/shows/${show.id}`;
   const need = usersNeeded(o);

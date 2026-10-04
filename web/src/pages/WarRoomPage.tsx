@@ -2,7 +2,8 @@
  * The War Room: is the system correct and how did it hold up, readable in one look.
  *
  * Top to bottom it answers: the verdict in one line (books balanced, server errors, the last
- * burst); the last burst's scorecard (stored, so it survives the live window and restarts); what
+ * burst); the last burst's scorecard (stored, so it survives the live window and restarts), or,
+ * while a burst runs on this instance, its running tally until its own report lands; what
  * this instance is doing right now (requests per second split into booked / declined correctly /
  * failed, and latency); the reconciler's books per show; and, folded away, the internals an
  * operator digs into (DB pool, event loop, memory, background jobs, the log tail).
@@ -17,6 +18,8 @@ import { get } from "../lib/api";
 import { ago, num } from "../lib/format";
 import { useBurstRuns, useShows } from "../lib/queries";
 import { GROUPS, groupCounts } from "../warroom/outcomes";
+import { burstState, type BurstState } from "../warroom/burst";
+import { BurstLive } from "../warroom/BurstLive";
 import { mb, ms, perSec, plain, uptime } from "../warroom/fmt";
 import { AlertIcon, CheckIcon, CrossIcon } from "../warroom/icons";
 import { Meter } from "../warroom/Meter";
@@ -168,7 +171,15 @@ function Verdict({
   );
 }
 
-function VerdictLine({ summary, run }: { summary: Summary | null; run: BurstRun | undefined }) {
+function VerdictLine({
+  summary,
+  run,
+  burst,
+}: {
+  summary: Summary | null;
+  run: BurstRun | undefined;
+  burst: BurstState;
+}) {
   if (!summary) {
     return <div className="h-6 w-full max-w-xl animate-pulse rounded bg-surface" />;
   }
@@ -188,7 +199,11 @@ function VerdictLine({ summary, run }: { summary: Summary | null; run: BurstRun 
       <Verdict ok={fivexx === 0}>
         {num(fivexx)} server error{fivexx === 1 ? "" : "s"} since this instance started
       </Verdict>
-      {run ? (
+      {burst.phase !== "idle" ? (
+        <Verdict ok pending>
+          {burst.phase === "running" ? "Burst running now" : "Burst finished, checking its report"}
+        </Verdict>
+      ) : run ? (
         <Verdict ok={run.ok}>
           Last burst {run.ok ? "passed" : "failed"} {checks.filter((c) => c.ok).length} of{" "}
           {checks.length} checks, {ago(run.created_at)}
@@ -810,20 +825,17 @@ export function WarRoomPage() {
   // The chart window ends at the latest point (server time), so clock skew never shifts it.
   const now = points.at(-1)?.t ?? 0;
 
-  // A burst finishing on this instance: pick up its stored report soon after the traffic stops.
+  // A burst on this instance stands the old scorecard down until its own report is stored.
+  const burst = useMemo(() => burstState(points, now, runs.data?.[0]), [points, now, runs.data]);
+
+  // Once its traffic stops, look for that report every couple of seconds.
   const refetchRuns = runs.refetch;
-  const active = points.length > 0 && reserves(points.at(-1)!) > 0;
-  const wasActive = useRef(false);
+  const finishing = burst.phase === "finishing";
   useEffect(() => {
-    if (active) {
-      wasActive.current = true;
-      return;
-    }
-    if (!wasActive.current) return;
-    wasActive.current = false;
-    const id = setTimeout(() => void refetchRuns(), 4_000);
-    return () => clearTimeout(id);
-  }, [active, refetchRuns]);
+    if (!finishing) return;
+    const id = setInterval(() => void refetchRuns(), 2_000);
+    return () => clearInterval(id);
+  }, [finishing, refetchRuns]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -842,18 +854,22 @@ export function WarRoomPage() {
           </div>
           <LinkState link={link} summary={summary} />
         </div>
-        <VerdictLine summary={summary} run={runs.data?.[0]} />
+        <VerdictLine summary={summary} run={runs.data?.[0]} burst={burst} />
       </div>
 
-      <Scorecard
-        runs={runs.data ?? []}
-        loading={runs.isPending}
-        liveShows={liveShows}
-        onFollow={(id) => {
-          setInternals(true);
-          setFollow((f) => ({ id, n: (f?.n ?? 0) + 1 }));
-        }}
-      />
+      {burst.phase === "idle" ? (
+        <Scorecard
+          runs={runs.data ?? []}
+          loading={runs.isPending}
+          liveShows={liveShows}
+          onFollow={(id) => {
+            setInternals(true);
+            setFollow((f) => ({ id, n: (f?.n ?? 0) + 1 }));
+          }}
+        />
+      ) : (
+        <BurstLive burst={burst} now={now} />
+      )}
 
       <Live
         points={points}
