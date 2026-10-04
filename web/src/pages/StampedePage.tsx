@@ -7,7 +7,15 @@
  * and every check the CLI runs: no 5xx, nothing sold twice, nobody over the limit, every
  * snapshot balanced, the audit, and /metrics agreeing with what the browser saw.
  */
-import { useEffect, useMemo, useRef, useState, type SubmitEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type SubmitEvent,
+} from "react";
 import { Link } from "react-router";
 import {
   DEFAULTS,
@@ -74,11 +82,22 @@ const INITIAL: Settings = {
   metrics: true,
 };
 
-/** One click to a known scale. "Full" is the CLI's run: ~21,600 requests at 2,000 seats. */
-const PRESETS: { label: string; settings: Settings }[] = [
-  { label: "Quick · 3k", settings: INITIAL },
+type Preset = { id: string; name: string; blurb: string; settings: Settings };
+
+/** One click to a known scale. "Full" is close to the CLI's run: ~21,600 requests at 2,000 seats. */
+const PRESETS: Preset[] = [
   {
-    label: "Full · 20k",
+    id: "quick",
+    name: "Quick check",
+    blurb:
+      "A short run on a mid-size hall. Every scenario fires at a modest scale, so it is the best first run.",
+    settings: INITIAL,
+  },
+  {
+    id: "full",
+    name: "Full release night",
+    blurb:
+      "The scale of npm run burst: the largest hall, a crowd of thousands and the most requests the form allows, 256 at a time.",
     settings: {
       hall: "large",
       users: 5_000,
@@ -93,6 +112,9 @@ const PRESETS: { label: string; settings: Settings }[] = [
     },
   },
 ];
+
+const sameSettings = (a: Settings, b: Settings) =>
+  (Object.keys(a) as (keyof Settings)[]).every((k) => a[k] === b[k]);
 
 const LIMITS = {
   users: [1, 10_000],
@@ -202,7 +224,141 @@ function useStampede() {
 // ---------------------------------------------------------------------------------------------
 // Pieces
 
-function NumberField({
+function planned(s: Settings): number {
+  try {
+    return plannedRequests(toOptions(s, "x") as BurstOptions);
+  } catch {
+    return 0;
+  }
+}
+
+const seatsIn = (h: Hall) => HALLS[h].rows * HALLS[h].seatsPerRow;
+
+/** A numbered step of the form: what to do, and why. */
+function Step({
+  n,
+  title,
+  hint,
+  aside,
+  children,
+}: {
+  n: number;
+  title: string;
+  hint?: ReactNode;
+  aside?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex items-start gap-2.5">
+        <span
+          aria-hidden
+          className="tabular mt-px grid size-5 shrink-0 place-items-center rounded-full bg-surface-3 text-[0.6875rem] font-semibold text-ink-2"
+        >
+          {n}
+        </span>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <h2 className="text-sm font-semibold text-ink">{title}</h2>
+          {hint && <p className="text-xs text-pretty text-muted">{hint}</p>}
+        </div>
+        {aside}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** Each preset as a card that says what it simulates and every value it sets. */
+function PresetPicker({
+  value,
+  onPick,
+  disabled,
+}: {
+  value: Settings;
+  onPick: (s: Settings) => void;
+  disabled: boolean;
+}) {
+  const name = useId();
+  const custom = !PRESETS.some((p) => sameSettings(value, p.settings));
+  return (
+    <fieldset className="flex flex-col gap-2" disabled={disabled}>
+      <legend className="sr-only">Scenario preset</legend>
+      {PRESETS.map((p) => {
+        const on = sameSettings(value, p.settings);
+        const ps = p.settings;
+        const facts: [string, string][] = [
+          ["Hall", `${num(seatsIn(ps.hall))} seats`],
+          ["Crowd", `${num(ps.users)} users`],
+          ["Hot seat", `${num(ps.hotUsers)} users`],
+          ["At once", `${num(ps.concurrency)} requests`],
+        ];
+        return (
+          <label
+            key={p.id}
+            className={cx(
+              "flex cursor-pointer flex-col gap-2 rounded-lg border p-3 transition-colors duration-150",
+              "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-primary-ink",
+              "has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60",
+              on
+                ? "border-primary bg-primary-soft"
+                : "border-line bg-surface-2/50 hover:border-line-strong",
+            )}
+          >
+            <input
+              type="radio"
+              name={name}
+              checked={on}
+              onChange={() => onPick(p.settings)}
+              className="sr-only"
+            />
+            <span className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-2">
+                <span
+                  aria-hidden
+                  className={cx(
+                    "grid size-4 shrink-0 place-items-center rounded-full border",
+                    on ? "border-primary-ink" : "border-line-strong",
+                  )}
+                >
+                  {on && <span className="size-2 rounded-full bg-primary-ink" />}
+                </span>
+                <span className="text-sm font-semibold text-ink">{p.name}</span>
+              </span>
+              <Pill tone={on ? "primary" : "neutral"} className="tabular">
+                {num(planned(ps))} requests
+              </Pill>
+            </span>
+            <span className="text-[0.8125rem] text-pretty text-ink-2">{p.blurb}</span>
+            <dl className="tabular grid grid-cols-2 gap-x-4 gap-y-1 border-t border-line pt-2 text-xs">
+              {facts.map(([k, v]) => (
+                <div key={k} className="flex justify-between gap-2">
+                  <dt className="text-muted">{k}</dt>
+                  <dd className="whitespace-nowrap text-ink">{v}</dd>
+                </div>
+              ))}
+            </dl>
+            <span className="text-xs text-pretty text-muted">
+              Traps: {ps.retryPct}% same-key retries, {ps.spoofPct}% spoofed user_id,{" "}
+              {num(ps.overLimitUsers)} over-limit users
+              {ps.edgeCases ? ", edge cases on" : ""}.
+            </span>
+          </label>
+        );
+      })}
+      {custom && (
+        <p className="text-xs text-muted" role="status">
+          <Pill tone="amber" className="mr-1.5">
+            Custom
+          </Pill>
+          Your settings match no preset. Picking one replaces them.
+        </p>
+      )}
+    </fieldset>
+  );
+}
+
+/** A labelled number input with its explanation beside it, sized for a narrow column. */
+function NumberRow({
   label,
   hint,
   value,
@@ -211,27 +367,52 @@ function NumberField({
   suffix,
 }: {
   label: string;
-  hint?: string;
+  hint: ReactNode;
   value: number;
   onChange: (v: number) => void;
   error?: string;
   suffix?: string;
 }) {
+  const id = useId();
   return (
-    <Field label={label} hint={hint} error={error}>
-      {({ id, describedBy, invalid }) => (
-        <Input
-          id={id}
-          type="number"
-          inputMode="numeric"
-          aria-describedby={describedBy}
-          invalid={invalid}
-          suffix={suffix}
-          value={Number.isFinite(value) ? value : ""}
-          onChange={(e) => onChange(e.target.value === "" ? Number.NaN : Number(e.target.value))}
-        />
+    <div className="grid grid-cols-[minmax(0,1fr)_7.5rem] items-start gap-x-3 gap-y-1">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <label htmlFor={id} className="text-[0.8125rem] font-medium text-ink">
+          {label}
+        </label>
+        <p id={`${id}-hint`} className="text-xs text-pretty text-muted">
+          {hint}
+        </p>
+      </div>
+      <Input
+        id={id}
+        type="number"
+        inputMode="numeric"
+        aria-describedby={error ? `${id}-hint ${id}-err` : `${id}-hint`}
+        invalid={!!error}
+        suffix={suffix}
+        value={Number.isFinite(value) ? value : ""}
+        onChange={(e) => onChange(e.target.value === "" ? Number.NaN : Number(e.target.value))}
+      />
+      {error && (
+        <p id={`${id}-err`} role="alert" className="col-span-2 text-[0.8125rem] text-danger">
+          {error}
+        </p>
       )}
-    </Field>
+    </div>
+  );
+}
+
+/** A titled cluster of settings inside the fine-tune step. */
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  const id = useId();
+  return (
+    <div role="group" aria-labelledby={id} className="flex flex-col gap-4">
+      <h3 id={id} className="text-xs font-semibold tracking-wide text-ink-2 uppercase">
+        {title}
+      </h3>
+      {children}
+    </div>
   );
 }
 
@@ -449,13 +630,11 @@ export function StampedePage() {
 
   const errors = touched ? problems(s, key) : {};
   const running = run.phase === "running";
-  const planned = useMemo(() => {
-    try {
-      return plannedRequests(toOptions(s, "x") as BurstOptions);
-    } catch {
-      return 0;
-    }
-  }, [s]);
+  const total = useMemo(() => planned(s), [s]);
+  const custom = !PRESETS.some((p) => sameSettings(s, p.settings));
+  const tuneErrors = Object.keys(errors).some((k) => k !== "key");
+  const [tuning, setTuning] = useState(false);
+  const tuneOpen = tuning || tuneErrors;
 
   // A rejected key comes back as the failure "could not create the show: HTTP 401/403".
   const keyRejected = run.phase === "failed" && /HTTP 40[13]/.test(run.error) && run.show === null;
@@ -472,6 +651,7 @@ export function StampedePage() {
   };
 
   const show = run.phase === "idle" ? null : run.show;
+  const { hotSeats, perUserLimit, limitParallel, retryCopies, pairShare } = DEFAULTS;
 
   return (
     <div className="flex flex-col gap-6">
@@ -488,132 +668,180 @@ export function StampedePage() {
         </p>
       </div>
 
-      <div className="grid items-start gap-6 lg:grid-cols-[22rem_minmax(0,1fr)]">
+      <div className="grid items-start gap-6 lg:grid-cols-[25rem_minmax(0,1fr)]">
         <form
           onSubmit={onSubmit}
           noValidate
-          className="flex flex-col gap-4 rounded-lg border border-line bg-surface p-4"
+          className="flex flex-col gap-6 rounded-lg border border-line bg-surface p-4"
           aria-label="Stampede settings"
         >
-          <Field
-            label="Admin key"
-            hint="Creating the show needs it. Kept for this tab only."
-            error={errors.key ?? (keyRejected ? "That admin key isn't valid." : undefined)}
+          <Step
+            n={1}
+            title="Admin access"
+            hint="Each run creates its own show, which only an admin can do."
           >
-            {({ id, describedBy, invalid }) => (
-              <Input
-                id={id}
-                type="password"
-                autoComplete="off"
-                aria-describedby={describedBy}
-                invalid={invalid}
-                value={key}
-                onChange={(e) => setKey(e.target.value)}
-              />
-            )}
-          </Field>
+            <Field
+              label="Admin key"
+              hint="Kept for this tab only."
+              error={errors.key ?? (keyRejected ? "That admin key isn't valid." : undefined)}
+            >
+              {({ id, describedBy, invalid }) => (
+                <Input
+                  id={id}
+                  type="password"
+                  autoComplete="off"
+                  aria-describedby={describedBy}
+                  invalid={invalid}
+                  value={key}
+                  onChange={(e) => setKey(e.target.value)}
+                />
+              )}
+            </Field>
+          </Step>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted">Presets</span>
-            {PRESETS.map((p) => (
+          <Step
+            n={2}
+            title="Pick a scenario"
+            hint="A preset fills in every setting below. Not sure? Start with Quick check."
+          >
+            <PresetPicker value={s} onPick={setS} disabled={running} />
+          </Step>
+
+          <Step
+            n={3}
+            title="Fine-tune"
+            hint="Optional. Change any number the preset set; each one is explained."
+            aside={
               <Button
-                key={p.label}
                 type="button"
                 size="sm"
                 variant="ghost"
-                disabled={running}
-                onClick={() => setS(p.settings)}
+                aria-expanded={tuneOpen}
+                aria-controls="stampede-tune"
+                onClick={() => setTuning(!tuneOpen)}
+                className="-mt-1 shrink-0"
               >
-                {p.label}
+                {tuneOpen ? "Hide" : custom ? "Edit" : "Show"}
+                <svg
+                  aria-hidden
+                  viewBox="0 0 16 16"
+                  className={cx(
+                    "size-3.5 transition-transform duration-150",
+                    tuneOpen && "rotate-180",
+                  )}
+                >
+                  <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                </svg>
               </Button>
-            ))}
-          </div>
+            }
+          >
+            {tuneOpen && (
+              <div
+                id="stampede-tune"
+                className="flex flex-col gap-6 rounded-md bg-surface-2/40 p-3"
+              >
+                <Group title="Hall and crowd">
+                  <div className="flex flex-col gap-1.5">
+                    <Segmented
+                      label="Hall size"
+                      value={s.hall}
+                      onChange={set("hall")}
+                      options={(Object.keys(HALLS) as Hall[]).map((h) => ({
+                        value: h,
+                        label: HALLS[h].label,
+                      }))}
+                    />
+                    <p className="text-xs text-muted">Seats in the fresh show the crowd storms.</p>
+                  </div>
+                  <NumberRow
+                    label="Crowd"
+                    hint={`Distinct signed-in users. Each may hold up to ${perUserLimit} seats.`}
+                    suffix="users"
+                    value={s.users}
+                    onChange={set("users")}
+                    error={errors.users}
+                  />
+                  <NumberRow
+                    label="Booking requests"
+                    hint={`Reserve calls from the crowd, mostly at the best seats; ${Math.round(pairShare * 100)}% ask for two.`}
+                    value={s.requests}
+                    onChange={set("requests")}
+                    error={errors.requests}
+                  />
+                  <NumberRow
+                    label="At once"
+                    hint="Requests in flight together. Higher hits the server harder."
+                    value={s.concurrency}
+                    onChange={set("concurrency")}
+                    error={errors.concurrency}
+                  />
+                </Group>
 
-          <Segmented
-            label="Hall"
-            value={s.hall}
-            onChange={set("hall")}
-            options={(Object.keys(HALLS) as Hall[]).map((h) => ({
-              value: h,
-              label: HALLS[h].label,
-            }))}
-          />
+                <Group title="Traps the server must survive">
+                  <NumberRow
+                    label="Hot-seat storm"
+                    hint={`Users who all rush A12 and ${hotSeats - 1} seats near it. Only ${hotSeats} can win.`}
+                    suffix="users"
+                    value={s.hotUsers}
+                    onChange={set("hotUsers")}
+                    error={errors.hotUsers}
+                  />
+                  <NumberRow
+                    label="Same-key retries"
+                    hint={`Share of requests sent ${retryCopies}× at once with one idempotency key, like a double tap. Each must book once.`}
+                    suffix="%"
+                    value={s.retryPct}
+                    onChange={set("retryPct")}
+                    error={errors.retryPct}
+                  />
+                  <NumberRow
+                    label="Spoofed user_id"
+                    hint="Share of requests that name someone else in the body. The booking must go to the sender."
+                    suffix="%"
+                    value={s.spoofPct}
+                    onChange={set("spoofPct")}
+                    error={errors.spoofPct}
+                  />
+                  <NumberRow
+                    label="Over-limit users"
+                    hint={`Users who each try ${limitParallel} seats at once. Exactly ${perUserLimit} must succeed.`}
+                    suffix="users"
+                    value={s.overLimitUsers}
+                    onChange={set("overLimitUsers")}
+                    error={errors.overLimitUsers}
+                  />
+                  <Switch
+                    checked={s.edgeCases}
+                    onChange={set("edgeCases")}
+                    label="Edge cases"
+                    hint="Crossed seat pairs, a reused key, cancelling someone else's booking."
+                  />
+                </Group>
 
-          <div className="grid grid-cols-2 gap-3">
-            <NumberField
-              label="Crowd"
-              suffix="users"
-              value={s.users}
-              onChange={set("users")}
-              error={errors.users}
-            />
-            <NumberField
-              label="Requests"
-              value={s.requests}
-              onChange={set("requests")}
-              error={errors.requests}
-            />
-            <NumberField
-              label="Hot-seat storm"
-              hint="On A12 and 5 more"
-              suffix="users"
-              value={s.hotUsers}
-              onChange={set("hotUsers")}
-              error={errors.hotUsers}
-            />
-            <NumberField
-              label="Over-limit users"
-              hint={`${DEFAULTS.limitParallel} at once, limit ${DEFAULTS.perUserLimit}`}
-              value={s.overLimitUsers}
-              onChange={set("overLimitUsers")}
-              error={errors.overLimitUsers}
-            />
-            <NumberField
-              label="Same-key retries"
-              hint={`${DEFAULTS.retryCopies} copies each`}
-              suffix="%"
-              value={s.retryPct}
-              onChange={set("retryPct")}
-              error={errors.retryPct}
-            />
-            <NumberField
-              label="Spoofed user_id"
-              suffix="%"
-              value={s.spoofPct}
-              onChange={set("spoofPct")}
-              error={errors.spoofPct}
-            />
-            <NumberField
-              label="In flight"
-              hint="Requests at once"
-              value={s.concurrency}
-              onChange={set("concurrency")}
-              error={errors.concurrency}
-            />
-          </div>
-
-          <Switch
-            checked={s.edgeCases}
-            onChange={set("edgeCases")}
-            label="Edge cases"
-            hint="Crossed seat pairs, a reused key, cancelling someone else's booking."
-          />
-          <Switch
-            checked={s.metrics}
-            onChange={set("metrics")}
-            label="Compare with /metrics"
-            hint="Turn off if someone else is booking on this instance right now."
-          />
+                <Group title="Cross-check">
+                  <Switch
+                    checked={s.metrics}
+                    onChange={set("metrics")}
+                    label="Compare with /metrics"
+                    hint="Checks the server's own counters agree with what this browser saw. Turn off if someone else is booking on this instance right now."
+                  />
+                </Group>
+              </div>
+            )}
+          </Step>
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-            <p className="tabular text-xs text-muted">{num(planned)} requests planned</p>
+            <p className="tabular text-xs text-pretty text-muted">
+              <span className="font-semibold text-ink">{num(total)} requests</span> at a{" "}
+              <span className="font-semibold text-ink">{num(seatsIn(s.hall))}-seat</span> hall
+            </p>
             {running ? (
               <Button type="button" variant="danger" onClick={stop}>
                 Stop
               </Button>
             ) : (
               <Button type="submit" variant="primary">
-                {run.phase === "idle" ? "Open the box office" : "Run again"}
+                {run.phase === "idle" ? "Start the stampede" : "Run again"}
               </Button>
             )}
           </div>
