@@ -192,3 +192,22 @@ Production still runs Node 22 in Docker.
 - `MAX_QUEUE` was lowered to 8,000 from a measured ~17.5 KB per request in flight.
 
 **Human:** asked for the chart library and for the interrupted work to be continued.
+
+## Phase 9: Final deploy + docs
+
+**Human:**
+
+- Asked how an evaluator is supposed to test the app, how the stampede simulator works, and what the admin key is for. Asked for those answers before the phase continued.
+
+**AI:**
+
+- Checked the live service as a grader would: healthy, but `GET /shows` was empty, and every way to get a show needed the admin key.
+- Proposed and implemented standing demo shows: reopened when 90% sold, guarded by an advisory lock against overlapping deploys, with tests.
+- Added the keepalive cron, the README's evaluator guide (its shell walkthrough run against the production bundle as written), and `WRITEUP.md`, distilled from the plan, the progress log and this file.
+- Ran the fresh-clone check.
+
+**Decisions made during the phase:**
+
+- Demo shows instead of a public, keyless `POST /shows`. Show creation stays admin-only, as the spec has it, while a grader with only their own script still has a hall to burst.
+- Old screenings stay listed with their books intact, rather than being reused or reset. A hall a grader sold out stays auditable.
+- The live burst waits for the live admin key, which exists only in Render. It is read from a gitignored file, never from chat.

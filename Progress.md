@@ -14,7 +14,7 @@ Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its check
 | 6     | UI II: live hall                        | ✅ done        |
 | 7     | Observability + War Room                | ✅ done        |
 | 8     | Burst CLI + Stampede simulator + tuning | ✅ done        |
-| 9     | Final deploy + docs                     | ⬜ not started |
+| 9     | Final deploy + docs                     | 🟡 in progress |
 
 ---
 
@@ -592,3 +592,54 @@ The previous session ended after Phase 7's commits; nothing of Phase 8 had been 
 - The simulator needs the admin key too, because it creates a show. Anyone with the key can create shows, but they are ephemeral (deleted after 24h) and capped at `MAX_SEATS_PER_SHOW`.
 
 **Commits:** see `git log`. The chart follow-up is one feature commit; Phase 8 is a tuning commit, the burst, the simulator, the CI job and a docs commit.
+
+---
+
+## Phase 9: Final deploy + docs 🟡
+
+**Deliverables**
+
+- [x] **Evaluator's view, checked first.** The live `GET /shows` was empty, and creating a show needs the admin key. So a grader who opened the URL found an empty box office, and a grader's own script had no show to burst.
+- [x] **Standing demo shows** (`server/src/engine/demo.ts`, `server/src/jobs/demo.ts`, `DEMO_SHOWS`):
+  - The server keeps one public hall of each spec open: **FDFS Premiere #n** (2,000 seats, instant confirm, limit 4) and **FDFS Late Show #n** (288 seats, 2-minute holds).
+  - When the latest screening is 90% sold, the next one opens on the job's next tick (every minute, and at boot).
+  - The check-then-open is one transaction behind a single-key advisory lock (Postgres keeps it apart from reserve's two-key locks), so instances overlapping in a deploy open each screening once.
+  - On in `render.yaml` and compose; off by default (tests, local dev).
+- [x] `.github/workflows/keepalive.yml`: a daily `/readyz` + `GET /shows` keeps Supabase's free project from pausing, and fails the run if the service doesn't come back ready.
+- [x] **README:** an "Evaluating FDFS" section:
+  - a five-minute tour
+  - the API from a shell (`curl` + `jq`, verified step by step against the production bundle)
+  - bursting it with your own tool: what each status means and how to check the books afterwards
+  - our burst and the simulator
+  - what the admin key does and doesn't do
+- [x] **`WRITEUP.md`:**
+  - the guarantees and where each is shown
+  - the atomic decision
+  - idempotency
+  - holds
+  - consistency over availability under partition
+  - overload
+  - the 2am pages
+  - what comes next
+  - AI usage (directed vs decided)
+- [ ] Push → Render redeploys; verify the demo halls open on the live instance, and measure the cold-start → healthy path.
+- [ ] Live 20k burst against the public URL (needs the live admin key), with its report and War Room screenshots captured into `docs/`.
+
+**Verification so far**
+
+- `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅ · `npm run build` ✅
+- **Fresh clone** (`git clone` → `npm ci` → typecheck, lint, format, build, test): 28 files, **316 tests** passed (+8: the demo-show job and its config).
+  - Demo tests: every built-in spec is a show the API accepts; #1 opens once, with the spec's hall and rules; #2 opens at exactly <10% free (2 of 20 free keeps #1 open, 1 of 20 opens #2); ephemeral look-alikes are ignored; **8 racing instances open exactly one**; an invalid spec is refused before the database; the job logs each show it opens.
+- **The production bundle with `DEMO_SHOWS=true`:**
+  - Both halls opened 85 ms after `listen`.
+  - The README's shell walkthrough ran as written: 201, then a 200 replay with `Idempotent-Replayed: true`, then `audit ok`.
+  - A grader-style burst with no admin key (1,000 minted tokens; 475 four-seat blocks, each sent twice with the same key; 500 users on A12): 474 × 201, 473 × 200 replays, 503 × 409 `seat_taken`, 0 5xx, audit ok.
+  - With 95% sold, **FDFS Premiere #2** opened on the next tick.
+  - The shows page checked in the browser pane.
+- **Live, before this phase's push:** `/healthz` 200 in 0.3s, `/readyz` ready, `GET /shows` empty (the gap above).
+
+**Open items / needs you**
+
+- **The live admin key**, for the live burst: Render dashboard → service **fdfs** → **Environment** → `ADMIN_API_KEY`. Put it in a gitignored `.env.live` (`ADMIN_API_KEY=...`); don't paste it into chat.
+- **The push**, which redeploys the live service. If the Blueprint doesn't sync `render.yaml` on push, add `DEMO_SHOWS=true` under the service's Environment by hand.
+- **Before submitting:** share the admin key with the graders, and re-check the keepalive run in Actions the week before.

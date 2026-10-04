@@ -11,9 +11,75 @@ A take-home for Paytm Money's _Deploy & Observe_ round. It sells numbered seats 
 
 The service is deployed and observable, with a live seat map, a War Room ops dashboard, a stampede simulator, and a burst CLI that checks every guarantee from the outside.
 
-> **Status:** under construction, built phase by phase. See [`Plan.md`](Plan.md) for the design and [`Progress.md`](Progress.md) for where things stand.
+> **Live:** <https://fdfs-dkyx.onrender.com> (Render free tier, Singapore; the first request after 15 idle minutes cold-starts it in about a minute). War Room: [`/app/war-room`](https://fdfs-dkyx.onrender.com/app/war-room) · metrics: [`/metrics`](https://fdfs-dkyx.onrender.com/metrics).
 >
-> **Live:** <https://fdfs-dkyx.onrender.com> (Render free tier, Singapore; the first request after an idle spell cold-starts it). War Room: [`/app/war-room`](https://fdfs-dkyx.onrender.com/app/war-room) · metrics: [`/metrics`](https://fdfs-dkyx.onrender.com/metrics).
+> The design and its trade-offs are in [`WRITEUP.md`](WRITEUP.md). [`Plan.md`](Plan.md) and [`Progress.md`](Progress.md) record how it was built, phase by phase.
+
+## Evaluating FDFS
+
+Everything below works against the live URL with no credentials, except the two runs marked **admin key**. The instance is a single free Render instance (0.1 CPU, 512 MB), so expect seconds of latency under a burst. Expect neither errors nor wrong answers.
+
+### A five-minute tour
+
+1. Open <https://fdfs-dkyx.onrender.com>. The server keeps two public halls open:
+   - **FDFS Premiere #n**: 2,000 seats, limit 4 per user, a reservation is confirmed at once (the spec's contract).
+   - **FDFS Late Show #n**: 288 seats, hold mode, so a reservation is held for 2 minutes until you confirm it.
+
+   When one is 90% sold, the next screening (`#n+1`) opens within a minute, so a burst never leaves the box office empty.
+
+2. Sign in with any username and book seats. Then open a second tab, sign in as someone else, and race yourself for one seat: the loser's map drops the seat as the winner gets it.
+3. Open the **War Room** (`/app/war-room`) in another tab while you book or burst:
+   - outcomes per second, latency percentiles, DB pool, event-loop lag, memory
+   - the reconciler's books-balance verdict per show
+   - a log tail where clicking a `request_id` shows that one request's lines
+4. `GET /shows/:id/audit` proves a show's books balance. `fdfs_invariant_violations_total` on `/metrics` must read 0.
+
+### The API from a shell
+
+With `curl` and `jq`:
+
+```bash
+URL=https://fdfs-dkyx.onrender.com
+# A user token (any username). Identity comes only from the token's `sub`.
+TOKEN=$(curl -s -X POST $URL/auth/login -H 'content-type: application/json' -d '{"username":"grader"}' | jq -r .token)
+# The open Premiere screening (newest first).
+SHOW=$(curl -s $URL/shows | jq -r '[.shows[] | select(.name | startswith("FDFS Premiere"))][0].id')
+# Reserve. The Idempotency-Key is required: the same key again replays (200), it never books twice.
+curl -s -X POST $URL/shows/$SHOW/reserve -H "authorization: Bearer $TOKEN"   -H 'content-type: application/json' -H 'idempotency-key: grader-1' -d '{"seats":["C7","C8"]}'
+curl -si -X POST $URL/shows/$SHOW/reserve -H "authorization: Bearer $TOKEN"   -H 'content-type: application/json' -H 'idempotency-key: grader-1' -d '{"seats":["C7","C8"]}' | grep -i replayed
+curl -s $URL/shows/$SHOW/audit
+```
+
+`POST /auth/tokens {"count": 5000, "prefix": "load"}` mints up to 10,000 user tokens in one call (`load-1` … `load-5000`) for load tests.
+
+### Bursting it with your own tool
+
+Point your script at an open demo show and use the minted tokens. What you should see, and what the service promises:
+
+- **201** for a new booking and **200** with `Idempotent-Replayed: true` for a repeated key.
+- **409** `seat_taken` (with `unavailable_seats`) or `per_user_limit` (with the numbers).
+- **422** `idempotency_key_reused`, when a key is sent again with different seats.
+- **429** only past 8,000 requests in flight on the instance, with a `Retry-After` sized to drain the queue. Retry with the same key.
+- **No 5xx.** A 503 would mean the database is unreachable, and it comes with `Retry-After`.
+
+Afterwards, check the books:
+
+- `GET /shows/:id/audit` must return `ok: true` and no violations.
+- `GET /shows/:id` counts must satisfy `available + held + confirmed = total`.
+- On `/metrics`, `fdfs_invariant_violations_total` must be 0. The delta of `fdfs_reserve_responses_total{outcome}` should equal what your tool observed.
+
+Every response carries `x-request-id` (send your own to trace a request), and `GET /ops/logs?request_id=<id>` returns that request's log lines.
+
+### Our burst and the Stampede simulator (admin key)
+
+Both create a fresh show per run so that every expected result is exact, and creating a show needs the admin key:
+
+- `npm run burst -- https://fdfs-dkyx.onrender.com --admin-key <key>` runs 20k checked requests (see [The burst](#the-burst)) and exits non-zero on any 5xx or broken guarantee.
+- `/app/stampede` runs the same engine from your browser and fills a hall live as it goes.
+
+### The admin key
+
+`ADMIN_API_KEY` authorizes exactly one call: `POST /shows`. It is not a user identity (reserving with it is a 401), and it unlocks nothing else. Render generated it for the deploy, so it is not in this repository. It is shared with the submission. Shows created with it for bursts are `ephemeral` (hidden from `GET /shows` by default, deleted after 24h) and capped at 20,000 seats.
 
 ## Quick start (local)
 
