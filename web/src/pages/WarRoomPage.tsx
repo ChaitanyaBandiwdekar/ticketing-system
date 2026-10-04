@@ -13,7 +13,14 @@ import { Pill, Segmented, cx } from "../components/ui";
 import { get } from "../lib/api";
 import { ago, num } from "../lib/format";
 import { useShows } from "../lib/queries";
-import { ChartTable, Legend, TimeChart, type Row, type Series } from "../warroom/TimeChart";
+import {
+  ChartCredit,
+  ChartTable,
+  Legend,
+  TimeChart,
+  type Row,
+  type Series,
+} from "../warroom/TimeChart";
 import {
   useOpsFeed,
   type FeedLink,
@@ -752,6 +759,8 @@ export function WarRoomPage() {
       </div>
 
       <LogTail logs={logs} skipped={logsSkipped} />
+
+      <ChartCredit />
     </div>
   );
 }
