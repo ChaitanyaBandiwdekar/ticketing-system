@@ -95,3 +95,19 @@ Production still runs Node 22 in Docker.
 - A flaky convergence assertion was traced to counts leading the seat map by one window. The test was fixed and the behaviour documented, rather than retrying the test.
 
 **Human:** said to continue and finish today, keeping quality up. The phase's hard stop was folded into that instruction: Phase 3b is blocked on credentials, so work moved on to Phase 4.
+
+## Phase 5: UI I (shell + shows)
+
+**AI implemented:** `PRODUCT.md`, the design pass (dark theme, type, components), the SPA (shell, demo login, shows list, create-show with the hall generator, the static show page), the canvas hall modules, the `layout` column, static serving under `/app/`, and all tests. No subagents were used. The visual check ran in the built-in browser pane at desktop and mobile widths against the production bundle.
+
+**Decisions made during the phase:**
+
+- The admin key is kept in sessionStorage only, and the user token in localStorage.
+- Static files bypass admission control and the access log, as health checks do. A test holds the only admission slot open to prove it.
+- A missing asset is a JSON 404, not the SPA shell, so a stale script tag fails loudly.
+- Hall geometry is optional data on the show; the engine never reads it.
+- UI module tests live in `test/web/`, typechecked by the web tsconfig, so `draw.ts`'s DOM types stay out of the server's typecheck.
+- A randomized test that pipes the generator into the server's validator found that the form could build layouts the API rejects (more than 50 aisles). The generator now caps each list at the API's limit.
+- The missing `web/` copy in the Docker build stage was caught by reviewing the build against the Dockerfile; there is no Docker on the dev machine.
+
+**Human:** started the phase with "continue". After a session break, asked for the Phase 5 tests (layout validation, static serving, the pure hall modules), and then for the AI to recheck whether the UI check had already been done and carry on.

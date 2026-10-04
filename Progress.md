@@ -10,7 +10,7 @@ Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its check
 | 3     | API service                             | ✅ done                      |
 | 3b    | Smoke deploy (Render free + Supabase)   | ⏸ blocked: needs credentials |
 | 4     | Realtime layer (SSE, jobs)              | ✅ done                      |
-| 5     | UI I: shell + shows                     | ⬜ not started               |
+| 5     | UI I: shell + shows                     | ✅ done                      |
 | 6     | UI II: live hall                        | ⬜ not started               |
 | 7     | Observability + War Room                | ⬜ not started               |
 | 8     | Burst CLI + Stampede simulator + tuning | ⬜ not started               |
@@ -263,3 +263,69 @@ The Phase 3 push failed CI's compose job, and the first fix revealed a second fa
 - **Phase 3b** still needs the Supabase project (Singapore) and the pooler URLs/password, plus a Render account connected to the repo. Nothing in Phases 4–8 depends on it.
 
 **Commits:** see `git log`. Phase 4 is a feature commit and a docs commit.
+
+---
+
+## Phase 5: UI I (shell + shows) ✅
+
+**Deliverables**
+
+- [x] `PRODUCT.md`: users, purpose and brand ("theatrical but precise"), which the design pass worked from.
+- [x] `web/`: a Vite + React 19 + Tailwind 4 SPA under `/app/`, dark theme, Geist / Geist Mono (self-hosted).
+  - App shell with the readiness indicator ("box office open") and the signed-in user.
+  - **Demo login:** the user token is kept in localStorage. The admin key for creating shows is kept in sessionStorage only, so it is gone when the tab closes.
+  - **Shows list:** occupancy, the invariant badge, and a toggle that shows the ephemeral burst shows. Counts are polled every 5s.
+  - **Create show:** a hall generator (rows × seats per row, aisles, cross-aisles, price, per-user limit, hold TTL) with a live seat-map preview.
+  - **Show page:** a static seat map from the REST snapshot (it goes live in Phase 6).
+  - TanStack Query client: 4xx responses are not retried, and the cache is invalidated after a create.
+- [x] Hall modules (`web/src/hall/`), all pure except the canvas component:
+  - `generator`: seat labels and the layout.
+  - `geometry`: labels + layout → positions (rows, aisles, cross-aisles, centred short rows, wrapping, grid fallback).
+  - `draw`: canvas metrics, painting and the hit test. Seat state is shown by shape as well as colour.
+- [x] `layout` on shows (`db/migrations/0005_show_layout.sql`): optional jsonb `{aisles_after, row_gaps_after}`. It is validated (≤ 50 entries each, aisles 1–1000, row labels `[A-Za-z0-9]{1,8}`), stored sorted with duplicates removed, and returned by create, list and read. The engine never reads it.
+- [x] `server/src/http/routes/web.ts`: serves the SPA.
+  - `/` and `/app` redirect to `/app/`.
+  - Hashed assets are `immutable` for a year. `index.html` is `no-cache` with a strict same-origin CSP.
+  - Paths without an extension get the shell. A missing file is a JSON 404, so a stale script tag fails loudly instead of loading HTML.
+  - Static files bypass admission control and the access log.
+  - A process with no UI build answers `/app/*` with a 404 that says to run `npm run build`.
+- [x] Build: `npm run build` = server bundle + `vite build` → `dist/web` (`WEB_DIST_DIR`). `typecheck` also checks `web/`. The react-hooks lint rules apply to `web/`.
+- [x] Dockerfile: copies `web/` into the build stage, so the image ships the UI. `scripts/smoke.sh` now checks the shell, the referenced script (`immutable`) and a client route.
+
+**Verification**
+
+- `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅ · `npm run build` ✅
+- `npm test` ✅: 20 files, 245 tests (+57)
+  - **Layout (22):**
+    - engine validation (bounds, types, list caps, several issues at once);
+    - stored sorted with duplicates removed; null when absent; nothing written when invalid; the DB `check` refuses non-objects;
+    - over the API: returned by create, list and read; unknown keys dropped (Fastify's default, as elsewhere); a missing list defaults to empty; 400 for bad shapes.
+  - **Static serving (10)**, against a temporary build folder:
+    - redirects; the shell's headers and CSP; client routes; asset caching and content types; JSON 404s for missing files;
+    - path traversal (plain and encoded) never leaves the build folder;
+    - **UI still served when the API is at capacity:** a POST whose body never finishes holds the only slot. `/app/*` is still 200 while `/shows` gets 429; the slot frees when the client goes away.
+    - the API-only process answers `/app/*` with the 404.
+  - **Hall modules (25)**, in `test/web/`, typechecked by `web/tsconfig.json` (DOM lib):
+    - row lettering (A…Z, AA…), generator cleanup, parsing;
+    - geometry for generated, unordered, lower-case/dashed, straggler, wrapped and grid halls;
+    - `measure`/`seatRect`/`seatAt`: every seat's centre hits that seat at 120–1600px, and aisles and cross-aisles miss.
+    - Two randomized (fast-check) tests: **every hall the form can describe is a show the API accepts**, and generated halls never overlap and stay inside their extent.
+- **Visual check** (previous session): the production bundle on `:18080` against embedded Postgres, every page at desktop and at 375×812 mobile. After this session's changes, the rebuilt bundle was rechecked on the create-show page.
+- `scripts/smoke.sh` passed end to end against the production bundle, including the new UI steps.
+
+**Fixed while testing**
+
+- The form could build a layout the API rejects: 60 seats per row allows 59 aisles (and 52 rows allows 51 cross-aisles), against the API's cap of 50. `normalizeSpec` now caps each list at `LIMITS.maxLayoutEntries`, so the preview is exactly what gets stored.
+- The Docker build stage did not copy `web/`, so the CI compose build would have failed (and the image would have had no UI).
+- A wrong comment in `geometry.ts`: `S-0001`-style labels read as one wrapped row, not a grid.
+
+**Deviations from plan**
+
+- Hall geometry is stored on the show (`layout` jsonb) rather than inferred from labels. Shows created by scripts without a layout still render, through label parsing or the grid fallback.
+- The canvas renderer (planned for Phase 6) arrived early, for the create-show preview and the static show page. Phase 6 adds live SSE updates, animations and the booking flow.
+
+**Open items / needs you**
+
+- **Phase 3b** still needs the Supabase project (Singapore) and the pooler URLs/password, plus a Render account connected to the repo.
+
+**Commits:** see `git log`. Phase 5 is a feature commit and a docs commit.
