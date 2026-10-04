@@ -1,9 +1,10 @@
 /** Demo shows job: keeps a public hall of each demo spec open (engine/demo.ts). */
 import type { Sql } from "../db/pool";
-import { ensureDemoShows } from "../engine/demo";
+import { currentDemoShows, ensureDemoShows } from "../engine/demo";
 import type { HubLog } from "../realtime/hub";
 
 export function createDemoShows(sql: Sql, opts: { maxSeatsPerShow: number }, log: HubLog) {
+  let current: string[] = [];
   const tick = async (): Promise<void> => {
     for (const show of await ensureDemoShows(sql, opts)) {
       log.info(
@@ -11,6 +12,8 @@ export function createDemoShows(sql: Sql, opts: { maxSeatsPerShow: number }, log
         "demo show opened",
       );
     }
+    current = await currentDemoShows(sql);
   };
-  return { tick };
+  /** The open screenings, as of the last tick: the reconciler keeps them in `fdfs_seats`. */
+  return { tick, current: () => current };
 }

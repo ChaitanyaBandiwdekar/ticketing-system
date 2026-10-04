@@ -127,10 +127,11 @@ describe("sweeper job", () => {
 });
 
 describe("reconciler job", () => {
-  it("audits recently active and watched shows, and reports each verdict", async () => {
+  it("audits recently active, watched and pinned shows, and reports each verdict", async () => {
     const bus = new EventBus();
     const touched = await makeShow(sql);
     const watched = await makeShow(sql);
+    const pinned = await makeShow(sql);
     const idle = await makeShow(sql);
     const onReport = vi.fn();
     const rec = createReconciler({
@@ -138,15 +139,16 @@ describe("reconciler job", () => {
       bus,
       log: quietLog(),
       watchedShows: () => [watched.id],
+      pinnedShows: () => [pinned.id],
       onReport,
     });
     bus.emit({ showId: touched.id, labels: ["A1"], cause: "reserve" });
 
     await rec.tick();
     const audited = onReport.mock.calls.map(([r]) => (r as { show_id: string }).show_id);
-    expect(audited.sort()).toEqual([touched.id, watched.id].sort());
+    expect(audited.sort()).toEqual([touched.id, watched.id, pinned.id].sort());
     expect(audited).not.toContain(idle.id);
-    expect(rec.stats).toEqual({ violations: 0, audits: 2 });
+    expect(rec.stats).toEqual({ violations: 0, audits: 3 });
     expect(rec.latest.get(touched.id)!.report.ok).toBe(true);
     rec.stop();
   });

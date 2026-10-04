@@ -112,3 +112,19 @@ export async function ensureDemoShows(
   }
   return opened;
 }
+
+/** The latest screening of every spec: the halls the box office has open right now. */
+export async function currentDemoShows(
+  sql: Sql,
+  specs: readonly DemoSpec[] = DEMO_SHOWS,
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const spec of specs) {
+    const [latest] = await sql<{ id: string }[]>`
+      select id from shows
+       where not ephemeral and name like ${`${spec.name} #%`}
+       order by created_at desc, id limit 1`;
+    if (latest) ids.push(latest.id);
+  }
+  return ids;
+}

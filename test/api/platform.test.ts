@@ -6,14 +6,14 @@ const t = useTestApp();
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 describe("health endpoints", () => {
-  it("GET /healthz is 200 {status: ok}", async () => {
-    const res = await t.app.inject({ url: "/healthz" });
+  it.each(["/healthz", "/health"])("GET %s is 200 {status: ok}", async (url) => {
+    const res = await t.app.inject({ url });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
   });
 
-  it("GET /readyz is 200 {status: ready} and never cached", async () => {
-    const res = await t.app.inject({ url: "/readyz" });
+  it.each(["/readyz", "/ready"])("GET %s is 200 {status: ready} and never cached", async (url) => {
+    const res = await t.app.inject({ url });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ready" });
     expect(res.headers["cache-control"]).toBe("no-store");

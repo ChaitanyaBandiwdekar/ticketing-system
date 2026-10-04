@@ -23,12 +23,17 @@ export function createJobs(deps: {
   obs?: { metrics: Metrics; ops: OpsHub };
 }) {
   const { config, sql, bus, hub, log, obs } = deps;
+  const demoShows =
+    config.jobs.demoShowsIntervalMs > 0
+      ? createDemoShows(sql, { maxSeatsPerShow: config.reservations.maxSeatsPerShow }, log)
+      : null;
   const sweeper = createSweeper(sql, bus, (seats, expired) => obs?.metrics.sweep(seats, expired));
   const reconciler = createReconciler({
     sql,
     bus,
     log,
     watchedShows: () => hub.watchedShows(),
+    pinnedShows: () => demoShows?.current() ?? [],
     onReport: (report, at) => {
       obs?.metrics.audit(report);
       hub.publishAudit(report, at);
@@ -41,15 +46,9 @@ export function createJobs(deps: {
     new Periodic("reconciler", config.jobs.reconcileIntervalMs, reconciler.tick, log),
     new Periodic("janitor", config.jobs.janitorIntervalMs, janitor.tick, log),
   ];
-  const demo =
-    config.jobs.demoShowsIntervalMs > 0
-      ? new Periodic(
-          "demo_shows",
-          config.jobs.demoShowsIntervalMs,
-          createDemoShows(sql, { maxSeatsPerShow: config.reservations.maxSeatsPerShow }, log).tick,
-          log,
-        )
-      : null;
+  const demo = demoShows
+    ? new Periodic("demo_shows", config.jobs.demoShowsIntervalMs, demoShows.tick, log)
+    : null;
   if (demo) runners.push(demo);
 
   if (obs) {

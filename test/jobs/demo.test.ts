@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  currentDemoShows,
   DEMO_SHOWS,
   demoSeats,
   ensureDemoShows,
@@ -94,6 +95,7 @@ describe("demo shows", () => {
 
     await sell(first!.id, seats.slice(18, 19)); // 1 free: under 10%
     const [second] = await ensureDemoShows(sql, opts, [s]);
+    expect(await currentDemoShows(sql, [s])).toEqual([second!.id]);
     expect(second!.name).toBe(`${s.name} #2`);
     expect(await ensureDemoShows(sql, opts, [s])).toEqual([]);
 
@@ -126,12 +128,18 @@ describe("demo shows", () => {
     expect(await screenings(s.name)).toHaveLength(0);
   });
 
-  it("the job logs each show it opens", async () => {
+  it("the job logs each show it opens and reports the open screenings", async () => {
     const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const job = createDemoShows(sql, opts, log);
+    expect(job.current()).toEqual([]);
     await job.tick();
     // The built-in specs: opened by this tick or already open from an earlier run.
     for (const s of DEMO_SHOWS) expect(await screenings(s.name)).not.toHaveLength(0);
+    // The latest screening of each spec (listShows is newest first).
+    const latest = await Promise.all(
+      DEMO_SHOWS.map(async (s) => (await screenings(s.name))[0]!.id),
+    );
+    expect(job.current()).toEqual(latest);
     for (const [fields, msg] of log.info.mock.calls) {
       expect(msg).toBe("demo show opened");
       expect(fields).toMatchObject({ job: "demo_shows" });

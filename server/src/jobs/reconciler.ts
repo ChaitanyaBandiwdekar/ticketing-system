@@ -1,6 +1,7 @@
 /**
  * Invariant reconciler: every few seconds, audit() each recently active show. That means shows
- * with seat changes in the last few minutes, plus shows someone is watching. A violation is
+ * with seat changes in the last few minutes, plus shows someone is watching, plus pinned shows
+ * (the open demo halls), so `fdfs_seats` always has the box office's halls even when idle. A violation is
  * logged as an error and counted (the `fdfs_invariant_violations_total` metric, which should
  * read 0 forever). Every verdict is pushed to the show's live streams for the invariant badge.
  */
@@ -27,6 +28,8 @@ export type ReconcilerDeps = {
   log: HubLog;
   /** Shows with live subscribers. */
   watchedShows?: () => string[];
+  /** Shows audited on every tick, active or not. */
+  pinnedShows?: () => string[];
   onReport?: (report: AuditReport, at: Date) => void;
 };
 
@@ -48,7 +51,11 @@ export function createReconciler(deps: ReconcilerDeps) {
     const cutoff = Date.now() - ACTIVE_WINDOW_MS;
     for (const [id, at] of lastActivity) if (at < cutoff) lastActivity.delete(id);
     const byRecency = [...lastActivity.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
-    const ids = new Set([...(deps.watchedShows?.() ?? []), ...byRecency]);
+    const ids = new Set([
+      ...(deps.watchedShows?.() ?? []),
+      ...(deps.pinnedShows?.() ?? []),
+      ...byRecency,
+    ]);
     return [...ids].slice(0, MAX_SHOWS_PER_TICK);
   };
 

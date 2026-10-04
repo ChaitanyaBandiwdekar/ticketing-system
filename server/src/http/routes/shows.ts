@@ -132,25 +132,42 @@ export const showRoutes =
 
     // The seat map. Under a stampede thousands of clients poll this; the micro-cache serializes
     // each show's snapshot at most once per window. Every cached body is still ONE consistent
-    // snapshot, just up to SNAPSHOT_CACHE_MS old.
-    const cache = new Map<string, { at: number; json: string }>();
+    // snapshot, up to SNAPSHOT_CACHE_MS old, and never older than this instance's last write to
+    // the show: a client that just got a 201 reads its own seat back.
+    const cache = new Map<string, { at: number; gen: number; json: string }>();
+    // Bumped on every seat change this instance commits (the bus fans out before the reply).
+    const generation = new Map<string, number>();
+    const unsubscribe = ctx.bus.on(({ showId }) => {
+      if (generation.size >= SNAPSHOT_CACHE_MAX_ENTRIES * 16) {
+        // Dropping both together is safe: no cached entry is left to be judged by a lost count.
+        generation.clear();
+        cache.clear();
+      }
+      generation.set(showId, (generation.get(showId) ?? 0) + 1);
+      cache.delete(showId);
+    });
+    app.addHook("onClose", async () => void unsubscribe());
+
     app.get<{ Params: { id: string } }>(
       "/shows/:id",
       { schema: { params: uuidParam } },
       async (request, reply) => {
         const id = request.params.id.toLowerCase();
         const ttl = config.http.snapshotCacheMs;
+        const gen = generation.get(id) ?? 0;
         const hit = cache.get(id);
         let json: string;
-        if (ttl > 0 && hit && Date.now() - hit.at < ttl) {
+        if (ttl > 0 && hit && hit.gen === gen && Date.now() - hit.at < ttl) {
           json = hit.json;
         } else {
           const snap = await db(getShowSnapshot(sql, id));
           if (!snap) throw showNotFound();
           json = JSON.stringify({ ...snap.show, counts: snap.counts, seats: snap.seats });
-          if (ttl > 0) {
+          // A write that committed during the read bumped the generation: don't cache what may
+          // predate it.
+          if (ttl > 0 && (generation.get(id) ?? 0) === gen) {
             if (cache.size >= SNAPSHOT_CACHE_MAX_ENTRIES) cache.clear();
-            cache.set(id, { at: Date.now(), json });
+            cache.set(id, { at: Date.now(), gen, json });
           }
         }
         return reply.type("application/json; charset=utf-8").send(json);
