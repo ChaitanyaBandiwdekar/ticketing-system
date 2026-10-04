@@ -8,6 +8,7 @@ import {
   type ShowLayout,
   type ShowSummary,
 } from "./api";
+import type { BurstRun } from "../../../server/src/obs/types";
 import { withRetries } from "./booking";
 
 export const keys = {
@@ -18,7 +19,19 @@ export const keys = {
   mineFor: (userId: string, showId: string | null) =>
     ["me", "reservations", userId, showId ?? "all"] as const,
   ready: ["readyz"] as const,
+  runs: ["ops", "runs"] as const,
 };
+
+/** The latest recorded bursts (GET /ops/runs), newest first. */
+export function useBurstRuns() {
+  return useQuery({
+    queryKey: keys.runs,
+    queryFn: ({ signal }) =>
+      get<{ runs: BurstRun[] }>("/ops/runs?limit=5", { signal }).then((r) => r.runs),
+    // A burst finishing elsewhere (the CLI) shows up within seconds.
+    refetchInterval: 10_000,
+  });
+}
 
 export function useShows(includeEphemeral: boolean) {
   return useQuery({

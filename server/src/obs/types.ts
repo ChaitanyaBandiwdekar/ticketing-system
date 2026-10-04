@@ -64,6 +64,42 @@ export type Summary = {
   streams: { clients: number; channels: number };
 };
 
+/**
+ * A burst's final report as the burst client (CLI or Stampede simulator) posts it to POST
+ * /ops/runs: the fields the War Room's scorecard renders, measured by the client.
+ */
+export type RunReport = {
+  ok: boolean;
+  show: { id: string; name: string; total_seats: number };
+  durationMs: number;
+  /** Reserve responses by outcome, retries included. */
+  outcomes: Record<string, number>;
+  /** Final outcome per scenario (after retries). */
+  scenarios: Record<string, Record<string, number>>;
+  status: { "2xx": number; "4xx": number; "429": number; "5xx": number; network: number };
+  retries: number;
+  reserveRequests: number;
+  /** Reserve requests per second over the run. */
+  throughput: number;
+  /** Reserve latency as the client saw it (ms). */
+  latency: { p50: number; p95: number; p99: number; max: number } | null;
+  slowest: { requestId: string; ms: number; outcome: string }[];
+  final: { total: number; available: number; held: number; confirmed: number } | null;
+  checks: { name: string; ok: boolean; detail: string }[];
+  settings?: { concurrency: number; perUserLimit: number };
+};
+
+/** GET /ops/runs: one stored run, newest first. */
+export type BurstRun = {
+  id: string;
+  show_id: string;
+  ok: boolean;
+  created_at: string;
+  report: RunReport;
+  /** The server's own audit of the show when the report arrived; null if the show was gone. */
+  server_audit: { ok: boolean; counts: AuditReport["counts"]; violations: number } | null;
+};
+
 /** GET /ops/stream: the first frame after connecting. */
 export type HelloFrame = {
   summary: Summary;

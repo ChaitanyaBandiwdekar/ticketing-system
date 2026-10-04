@@ -140,8 +140,10 @@ export const Input = forwardRef<
 type SegmentedProps<T extends string> = {
   label: string;
   value: T;
-  options: { value: T; label: string }[];
+  options: { value: T; label: ReactNode }[];
   onChange: (value: T) => void;
+  /** Keep the label for assistive tech only (the context already names the control). */
+  hideLabel?: boolean;
 };
 
 /** A radio group drawn as a segmented control (arrow keys move, as native radios do). */
@@ -150,11 +152,14 @@ export function Segmented<T extends string>({
   value,
   options,
   onChange,
+  hideLabel = false,
 }: SegmentedProps<T>) {
   const name = useId();
   return (
     <fieldset className="flex flex-col gap-1.5">
-      <legend className="mb-1.5 text-[0.8125rem] font-medium text-ink-2">{label}</legend>
+      <legend className={hideLabel ? "sr-only" : "mb-1.5 text-[0.8125rem] font-medium text-ink-2"}>
+        {label}
+      </legend>
       <div className="inline-flex w-fit rounded-md border border-line bg-surface p-0.5">
         {options.map((o) => (
           <label

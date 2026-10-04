@@ -1,7 +1,7 @@
 /**
  * The War Room feed: GET /ops/stream (server-sent events) folded into state.
  *
- * `hello` replaces everything (the last five minutes of points and the recent log lines), so a
+ * `hello` replaces everything (the last ten minutes of points and the recent log lines), so a
  * reconnect after a deploy or a dropped connection starts clean instead of splicing two
  * processes' series together. Each `tick` appends one point, the fresh summary and the new log
  * lines. The browser reconnects a dropped stream on its own (the server sends `retry: 2000`);
@@ -30,8 +30,8 @@ export type OpsFeed = {
   logsSkipped: number;
 };
 
-/** Points kept: the server's hello window (5 minutes at one per second). */
-const MAX_POINTS = 300;
+/** Points kept: the server's hello window (10 minutes at one per second). */
+const MAX_POINTS = 600;
 const MAX_LOGS = 1_000;
 
 const initial: OpsFeed = {

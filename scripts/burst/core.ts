@@ -997,7 +997,7 @@ export async function runBurst(
   }
 
   const sortedLat = latencies.sort((a, b) => a - b);
-  return {
+  const report: BurstReport = {
     ok: checks.every((c) => c.ok),
     show,
     base: o.base,
@@ -1023,4 +1023,18 @@ export async function runBurst(
     metrics,
     checks,
   };
+
+  // Record the run, so the War Room shows its verdict after the live window has moved on. The
+  // server keeps the fields its scorecard renders and adds its own audit of the show. Best
+  // effort: a failure here is a status line, never a failed burst.
+  const saved = await send("POST", "/ops/runs", {
+    bearer: o.adminKey,
+    body: { ...report, settings: { concurrency: o.concurrency, perUserLimit: o.perUserLimit } },
+  });
+  if (saved.status !== 201) {
+    status(
+      `note: could not record the run for the War Room (HTTP ${saved.status} ${saved.outcome})`,
+    );
+  }
+  return report;
 }

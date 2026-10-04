@@ -64,6 +64,14 @@
   --color-ramp-1: #9ec5f4;
   --color-ramp-2: #5598e7;
   --color-ramp-3: #256abf;
+  /*
+   * War Room emphasis: bookings wear series-1, everything the system correctly turned away is
+   * de-emphasis gray (three steps, told apart by the 2px gaps and labels), failures wear the
+   * danger status color. Validated on the surface: blue/gray/danger CVD dE >= 11.9, all >= 3:1.
+   */
+  --color-decline-1: oklch(0.52 0 0);
+  --color-decline-2: oklch(0.42 0 0);
+  --color-decline-3: oklch(0.62 0 0);
 
   --radius-sm: 0.25rem;
   --radius-md: 0.4rem;

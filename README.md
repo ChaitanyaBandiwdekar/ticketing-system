@@ -29,9 +29,10 @@ Everything below works against the live URL with no credentials, except the two 
 
 2. Sign in with any username and book seats. Then open a second tab, sign in as someone else, and race yourself for one seat: the loser's map drops the seat as the winner gets it.
 3. Open the **War Room** (`/app/war-room`) in another tab while you book or burst:
-   - outcomes per second, latency percentiles, DB pool, event-loop lag, memory
+   - the last burst's verdict: every guarantee it checked, seats sold, where every request went, latency
+   - requests per second (booked / declined correctly / failed) and latency, live
    - the reconciler's books-balance verdict per show
-   - a log tail where clicking a `request_id` shows that one request's lines
+   - under Internals: the DB pool, event loop, memory, background jobs, and a log tail where clicking a `request_id` shows that one request's lines
 4. `GET /shows/:id/audit` proves a show's books balance. `fdfs_invariant_violations_total` on `/metrics` must read 0.
 
 ### The API from a shell
@@ -133,16 +134,15 @@ The sign-in is per tab: open a second tab, sign in there as someone else, and ra
 
 ### The War Room
 
-`/app/war-room` shows this instance second by second, from one server-sent-events feed (`GET /ops/stream`):
+`/app/war-room` answers, top to bottom: is the box office correct, and how did it hold up?
 
-- the reconciler's verdict (books balance or not) for every recently active show
-- reserve outcomes per second, by outcome
-- p50/p95/p99 latency
-- DB calls in flight against the pool size, event-loop lag, and memory
-- the background jobs' health
-- a log tail where clicking a request id shows every line of that one request
+- **One verdict line:** books balanced across the audited shows, server errors since start, and the last burst's result.
+- **The last burst's scorecard.** Every burst (the CLI and the simulator) posts its final report to `POST /ops/runs` with the admin key; the server re-audits the show from its own snapshot as the report arrives and stores both. So the verdict is still there after the live window has moved on or the free instance has slept: pass/fail with every check, seats sold against the hall, where every request went (booked, declined correctly, failed), throughput, and p50/p95/p99/max.
+- **Right now:** this instance's reserve requests per second, split into booked (blue), declined correctly (gray: seat taken, over the limit, idempotent replays) and failed (red: 429 or 5xx), with p50/p99 latency below on the same time axis, over the last 1, 5 or 10 minutes. Seconds are grouped into columns wide enough to read.
+- **Books per show:** the reconciler's latest verdict and seat split for every recently active show.
+- **Internals** (folded): DB calls in flight against the pool size, event-loop lag, memory against the 512 MB limit, the background jobs, and a log tail where clicking a request id shows every line of that one request.
 
-Every chart has a table view. The charts are drawn with [TradingView Lightweight Charts™](https://www.tradingview.com/lightweight-charts/) (Apache-2.0), loaded only on this page.
+The live parts come from one server-sent-events feed (`GET /ops/stream`). Every live chart has a table view. The charts are plain SVG.
 
 ### The Stampede simulator
 
@@ -175,15 +175,17 @@ Measured with the server throttled to Render's free tier (0.1 CPU, 512 MB): 21,5
 
 ## Observability
 
-Everything is public on purpose, so graders get metrics and logs without a paid log drain. None of it takes an admission slot or writes an access-log line.
+Everything is public on purpose, so graders get metrics and logs without a paid log drain. None of the reads takes an admission slot or writes an access-log line.
 
-| Endpoint              | What it serves                                                                                             |
-| --------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `GET /metrics`        | Prometheus exposition (below), plus Node's process and event-loop metrics                                  |
-| `GET /ops/summary`    | Totals, latency over the last minute, saturation, the reconciler's latest verdicts, job health             |
-| `GET /ops/timeseries` | One point per second for the last 10 minutes (`?since=<epoch ms>`)                                         |
-| `GET /ops/logs`       | The in-memory log tail: `?request_id=`, `?level=warn`, `?after=<seq>`, `?limit=` (redacted, no stacks)     |
-| `GET /ops/stream`     | The War Room feed (SSE): `hello` with the last 5 minutes, then a `tick` a second with new points and lines |
+| Endpoint              | What it serves                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `GET /metrics`        | Prometheus exposition (below), plus Node's process and event-loop metrics                                    |
+| `GET /ops/summary`    | Totals, latency over the last minute, saturation, the reconciler's latest verdicts, job health               |
+| `GET /ops/timeseries` | One point per second for the last 10 minutes (`?since=<epoch ms>`)                                           |
+| `GET /ops/logs`       | The in-memory log tail: `?request_id=`, `?level=warn`, `?after=<seq>`, `?limit=` (redacted, no stacks)       |
+| `GET /ops/stream`     | The War Room feed (SSE): `hello` with the last 10 minutes, then a `tick` a second with new points and lines  |
+| `GET /ops/runs`       | The last recorded bursts, newest first (`?limit=`, at most 20), each with the server's own audit of its show |
+| `POST /ops/runs`      | Admin key. Records a burst's final report (the burst CLI and the simulator do this when they finish)         |
 
 Key metrics:
 

@@ -379,3 +379,74 @@ describe("public log tail", () => {
     expect(errorOf(res).code).toBe("validation_error");
   });
 });
+
+describe("burst runs", () => {
+  const t = useTestApp();
+
+  const report = (show: { id: string; name: string }, extra: Record<string, unknown> = {}) => ({
+    ok: true,
+    show: { id: show.id, name: show.name, total_seats: 20 },
+    durationMs: 1234.5,
+    outcomes: { created: 3, seat_taken: 40 },
+    scenarios: { stampede: { created: 3, seat_taken: 40 } },
+    status: { "2xx": 3, "4xx": 40, "429": 0, "5xx": 0, network: 0 },
+    retries: 0,
+    reserveRequests: 43,
+    throughput: 34.8,
+    latency: { p50: 12.3, p95: 40, p99: 51.2, max: 60 },
+    slowest: [{ requestId: "b1-7", ms: 60, outcome: "created" }],
+    final: { total: 20, available: 17, held: 0, confirmed: 3 },
+    checks: [{ name: "no 5xx", ok: true, detail: "0 server errors" }],
+    settings: { concurrency: 8, perUserLimit: 4 },
+    ...extra,
+  });
+
+  const post = (body: unknown, headers: Record<string, string> = t.admin) =>
+    t.app.inject({ method: "POST", url: "/ops/runs", headers, payload: body as object });
+
+  it("records a run only with the admin key", async () => {
+    const show = await t.show();
+    const body = report({ id: show.id, name: String(show.name) });
+    expect((await post(body, {})).statusCode).toBe(401);
+    const user = await t.user();
+    expect((await post(body, user.headers)).statusCode).toBe(403);
+  });
+
+  it("stores the report with the server's own audit, keeps only rendered fields, and lists newest first", async () => {
+    const show = await t.show();
+    const first = await post(
+      report({ id: show.id, name: String(show.name) }, { base: "http://x", polls: { count: 1 } }),
+    );
+    expect(first.statusCode).toBe(201);
+    const run = first.json<{
+      id: string;
+      report: Record<string, unknown>;
+      server_audit: unknown;
+    }>();
+    expect(run.report).not.toHaveProperty("base");
+    expect(run.report).not.toHaveProperty("polls");
+    expect(run.server_audit).toMatchObject({
+      ok: true,
+      counts: { total: 20, available: 20, held: 0, confirmed: 0 },
+      violations: 0,
+    });
+
+    // A show that no longer exists still records, without a server audit.
+    const gone = { id: "00000000-0000-4000-8000-000000000000", name: "gone" };
+    const second = await post(report(gone, { ok: false }));
+    expect(second.statusCode).toBe(201);
+    expect(second.json<{ server_audit: unknown }>().server_audit).toBeNull();
+
+    const list = await t.app.inject({ method: "GET", url: "/ops/runs?limit=20" });
+    expect(list.statusCode).toBe(200);
+    const ids = list.json<{ runs: { id: string }[] }>().runs.map((r) => r.id);
+    const secondId = second.json<{ id: string }>().id;
+    expect(ids.indexOf(secondId)).toBeLessThan(ids.indexOf(run.id));
+  });
+
+  it("rejects a malformed report", async () => {
+    const res = await post({ ok: true, show: { id: "not-a-uuid" } });
+    expect(res.statusCode).toBe(400);
+    expect(errorOf(res).code).toBe("validation_error");
+  });
+});

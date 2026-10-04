@@ -35,6 +35,7 @@ import { authRoutes } from "./routes/auth";
 import { healthRoutes } from "./routes/health";
 import { opsRoutes } from "./routes/ops";
 import { reservationRoutes } from "./routes/reservations";
+import { runRoutes } from "./routes/runs";
 import { showRoutes } from "./routes/shows";
 import { streamRoutes } from "./routes/stream";
 import { webRoutes } from "./routes/web";
@@ -243,6 +244,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(reservationRoutes(ctx));
   await app.register(streamRoutes(ctx));
   await app.register(opsRoutes(ctx));
+  await app.register(runRoutes(ctx));
   await app.register(webRoutes(ctx));
   return app;
 }

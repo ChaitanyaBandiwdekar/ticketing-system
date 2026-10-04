@@ -5,7 +5,7 @@
  * so watching the War Room never adds per-viewer work on the hot path.
  *
  * Frames (SSE, JSON data):
- *   hello  {summary, points[], logs[], latest_seq}  on connect: the last 5 minutes and log lines
+ *   hello  {summary, points[], logs[], latest_seq}  on connect: the last 10 minutes and log lines
  *   tick   {point, summary, logs[], logs_skipped}    every second; logs are the lines since the
  *          previous tick (at most LOGS_PER_TICK; the rest are counted, not sent; /ops/logs pages)
  */
@@ -18,7 +18,7 @@ import type { Point } from "./timeseries";
 import type { AuditSummary, HelloFrame, Summary, TickFrame } from "./types";
 
 const TICK_MS = 1_000;
-const HELLO_WINDOW_MS = 5 * 60_000;
+const HELLO_WINDOW_MS = 10 * 60_000;
 const HELLO_LOGS = 200;
 const LOGS_PER_TICK = 300;
 const MAX_BUFFERED = 1024 * 1024;
