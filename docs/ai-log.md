@@ -211,3 +211,24 @@ Production still runs Node 22 in Docker.
 - Demo shows instead of a public, keyless `POST /shows`. Show creation stays admin-only, as the spec has it, while a grader with only their own script still has a hall to burst.
 - Old screenings stay listed with their books intact, rather than being reused or reset. A hall a grader sold out stays auditable.
 - The live burst waits for the live admin key, which exists only in Render. It is read from a gitignored file, never from chat.
+
+### Evaluator audit
+
+**Human:** asked for one pass over the whole application against the assignment email, from the evaluator's side: the API contract, the UI and UX, and the other flows.
+
+**AI:**
+
+- Ran the spec's contract against the live URL from a script: reserve, replay, key reuse, seat taken, a partial pair, spoofed fields, a foreign cancel, over-limit, no key, no token, a cancel and rebook, counts, the audit and `/metrics`. Walked the UI in a browser.
+- Found two places where the contract differed from the email's wording, and fixed them with tests:
+  - A key reused with different seats answered 422, following the IETF draft. The email says 409, so it is now 409.
+  - A replay answered 200. The email defines only 201 and says a retry "returns the original reservation", so a replay now returns the original 201, and the `Idempotent-Replayed` header marks it. The burst and the smoke test now read the header instead of the status code.
+- Found that `fdfs_seats` was empty on an idle instance: only shows with recent activity were audited. The open demo halls are now pinned into the reconciler.
+- Found that `GET /shows/:id` could answer up to 250 ms behind a client's own 201. Every write now drops the show's cached snapshot, and a generation stamp keeps a read that raced a commit out of the cache.
+- Added `/health` and `/ready` as aliases, for probes that expect those names.
+- Found that the 2,000-seat hall overflowed the desktop panel by 74 px, which hid the right-hand block behind a scrollbar. The 14 px minimum seat pitch is now used only for coarse pointers.
+- Stated the all-or-nothing rule for multi-seat requests explicitly in the README and the write-up, and spelled out the admin key's header with a `curl` example.
+
+**Decisions made during the audit:**
+
+- Replays return 201, not 200 (the human chose this). It is the reading of the email that's safest against a grader's script, and it is how Stripe-style replays behave.
+- The live 20k burst is run by the human with the live admin key, after this redeploys.

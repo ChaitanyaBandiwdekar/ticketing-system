@@ -24,7 +24,7 @@ Measured with the server held to Render's free tier (0.1 CPU, 512 MB):
 A reservation is decided by one PL/pgSQL function, `fdfs_reserve()`, called as a single `SELECT`. The statement is its own transaction: no BEGIN/COMMIT round trips, and locks are held for microseconds.
 
 1. **Lock-free snapshot.** One statement reads the user's idempotency key, the requested seats, and the user's active seat count, all in the same snapshot. It answers most requests outright:
-   - replay, or key reused with different seats (422);
+   - replay, or key reused with different seats (409);
    - unknown seats;
    - over the limit;
    - a seat already taken.
@@ -33,7 +33,9 @@ A reservation is decided by one PL/pgSQL function, `fdfs_reserve()`, called as a
 
 2. **Claim the key:** `INSERT … ON CONFLICT DO NOTHING`. An in-flight duplicate waits on the unique index, then replays.
 3. **Per-(show, user) advisory lock,** then an exact count of the user's active seats against the limit.
-4. **Lock the seats,** sorted by id, `FOR UPDATE`. Re-check them all (all or nothing), insert the reservation, update the seats.
+4. **Lock the seats,** sorted by id, `FOR UPDATE`. Re-check them all, insert the reservation, update the seats.
+
+**Multi-seat requests are all or nothing.** If any requested seat is taken, nothing is booked and the 409 `seat_taken` lists the taken seats in `unavailable_seats`. Under concurrency this holds because steps 1 and 4 check the whole set, and step 4 holds every seat's lock while it writes them. A buyer asking for a pair wants the pair; the UI then offers to book just the seats that are still free.
 
 **Deadlock freedom comes from one global lock order:** idempotency key → per-user advisory lock → seats by id → reservation rows. Every writer follows it: reserve, confirm, cancel, the sweeper, and the janitor. Two details make the order hold:
 
@@ -49,8 +51,8 @@ The crossed-pairs tests (`[X,Y]` against `[Y,X]`, hundreds at once) run with zer
 ## Idempotency
 
 - Keys are scoped per user: `(user_id, key)`. One user's key can't replay another's booking.
-- The request fingerprint is a sha256 of the show and the sorted seat set. The same key with different seats is a 422 (IETF Idempotency-Key draft).
-- A replay returns the original reservation with its _current_ status, as 200 with `Idempotent-Replayed: true`.
+- The request fingerprint is a sha256 of the show and the sorted seat set. The same key with different seats is a 409 `idempotency_key_reused`, as the spec asks (the IETF Idempotency-Key draft would use 422).
+- A replay returns the original response: 201 and the original reservation, with its _current_ status. `Idempotent-Replayed: true` tells a client that nothing new was booked.
 - A duplicate that arrives while the original is in flight waits for it and replays; it does not get a 409. The original takes milliseconds, so waiting is cheaper than a 409 and a client retry loop.
 - A decline doesn't consume the key. A retry after `seat_taken` is evaluated again, which can never double-book.
 - Keys expire after 24h (the janitor). A retry after that is a new request.
@@ -74,7 +76,7 @@ Postgres is the only source of truth. No cache ever decides a seat. When the dat
 
 - **Writes** answer 503 `db_unavailable` with `Retry-After`. Every request-path DB call has a deadline (10s), so a database behind a pooler that silently queues becomes a fast 503, not a hang. CI found this case: PgBouncer queued queries for 120s while Postgres was stopped.
   - The deadline fails a _silent_ database, not a _busy_ one. If the database answered any other call within the window, the call keeps waiting, up to six deadlines. At 0.1 CPU a burst's first wave can queue for 20s, and that must stay slow, not turn into errors.
-- **Reads** answer 503 too. The 250 ms micro-cache on `GET /shows/:id` only spares the CPU of serializing; it doesn't serve stale maps through an outage.
+- **Reads** answer 503 too. The 250 ms micro-cache on `GET /shows/:id` only spares the CPU of serializing; it doesn't serve stale maps through an outage. Every write drops the show's entry, so a client reads its own booking right after the 201.
 - **`/readyz`** fails closed on its own one-connection pool. **`/healthz`** stays 200, so the platform doesn't restart a healthy process because its database is away.
 - **The live maps** keep their last state. The page says "Reconnecting", polls the REST read every 5s while the stream is down, and converges again on reconnect.
 

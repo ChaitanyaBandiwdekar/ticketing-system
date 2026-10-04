@@ -44,7 +44,7 @@ URL=https://fdfs-dkyx.onrender.com
 TOKEN=$(curl -s -X POST $URL/auth/login -H 'content-type: application/json' -d '{"username":"grader"}' | jq -r .token)
 # The open Premiere screening (newest first).
 SHOW=$(curl -s $URL/shows | jq -r '[.shows[] | select(.name | startswith("FDFS Premiere"))][0].id')
-# Reserve. The Idempotency-Key is required: the same key again replays (200), it never books twice.
+# Reserve. The Idempotency-Key is required: the same key again returns the original 201, never a second booking.
 curl -s -X POST $URL/shows/$SHOW/reserve -H "authorization: Bearer $TOKEN"   -H 'content-type: application/json' -H 'idempotency-key: grader-1' -d '{"seats":["C7","C8"]}'
 curl -si -X POST $URL/shows/$SHOW/reserve -H "authorization: Bearer $TOKEN"   -H 'content-type: application/json' -H 'idempotency-key: grader-1' -d '{"seats":["C7","C8"]}' | grep -i replayed
 curl -s $URL/shows/$SHOW/audit
@@ -56,9 +56,9 @@ curl -s $URL/shows/$SHOW/audit
 
 Point your script at an open demo show and use the minted tokens. What you should see, and what the service promises:
 
-- **201** for a new booking and **200** with `Idempotent-Replayed: true` for a repeated key.
-- **409** `seat_taken` (with `unavailable_seats`) or `per_user_limit` (with the numbers).
-- **422** `idempotency_key_reused`, when a key is sent again with different seats.
+- **201** for a new booking. A repeated key gets the original reservation back, also **201**, with `Idempotent-Replayed: true` to tell the two apart.
+- **409** `seat_taken` (with `unavailable_seats`), `per_user_limit` (with the numbers), or `idempotency_key_reused` when a key is sent again with different seats.
+- **All or nothing** for multi-seat requests: if any requested seat is taken, nothing is booked and the 409 lists the taken seats in `unavailable_seats`.
 - **429** only past 8,000 requests in flight on the instance, with a `Retry-After` sized to drain the queue. Retry with the same key.
 - **No 5xx.** A 503 would mean the database is unreachable, and it comes with `Retry-After`.
 
@@ -79,7 +79,13 @@ Both create a fresh show per run so that every expected result is exact, and cre
 
 ### The admin key
 
-`ADMIN_API_KEY` authorizes exactly one call: `POST /shows`. It is not a user identity (reserving with it is a 401), and it unlocks nothing else. Render generated it for the deploy, so it is not in this repository. It is shared with the submission. Shows created with it for bursts are `ephemeral` (hidden from `GET /shows` by default, deleted after 24h) and capped at 20,000 seats.
+`ADMIN_API_KEY` authorizes exactly one call: `POST /shows`, sent as `Authorization: Bearer <ADMIN_API_KEY>`. It is not a user identity (reserving with it is a 401), and it unlocks nothing else. Render generated it for the deploy, so it is not in this repository. It is shared with the submission.
+
+```bash
+curl -s -X POST $URL/shows -H "authorization: Bearer $ADMIN_API_KEY" -H 'content-type: application/json' -d '{"name":"friday-night","seats":["A1","A2","A3","A12"],"price_paise":25000}'
+```
+
+Shows are capped at 20,000 seats. Add `"ephemeral": true` for a load-test show: it is hidden from `GET /shows` by default and deleted after 24h. Our burst and the simulator create theirs that way.
 
 ## Quick start (local)
 
@@ -157,7 +163,7 @@ npm run burst -- <URL> --small                                              # ~2
 | `hot`      | 500 users on A12 and 5 more front-center seats           | one winner per hot seat                        |
 | `stampede` | 20,000 Zipf-skewed single and pair requests, 5,000 users | only bookings, `seat_taken`, `per_user_limit`  |
 | `retry`    | 100 keys, each sent 5 times at once                      | at most one booking per key; the rest replay   |
-| `keyreuse` | one key for other seats, then the original seats again   | 422 `idempotency_key_reused`, then a replay    |
+| `keyreuse` | one key for other seats, then the original seats again   | 409 `idempotency_key_reused`, then a replay    |
 | `limit`    | 20 users × 10 parallel single-seat requests, limit 4     | exactly 4 booked, 6 `per_user_limit`, per user |
 | `crossed`  | 50 pairs: `[X,Y]` vs `[Y,X]` at once                     | exactly one winner, no deadlock                |
 | `spoof`    | a body `user_id` naming someone else                     | booked for the token's user                    |
@@ -186,7 +192,7 @@ Key metrics:
 - `fdfs_invariant_violations_total`: counted by the reconciler's audits. It must read 0 forever.
 - `fdfs_identity_spoof_ignored_total`, `fdfs_db_retries_total{sqlstate}`, `fdfs_admission_shed_total`.
 - `fdfs_reservation_duration_seconds{outcome}` and `fdfs_http_request_duration_seconds{route}` histograms (buckets up to 30s), and `fdfs_http_responses_total{route,status_class}`. Routes are templates, never raw URLs.
-- Gauges: `fdfs_db_calls_in_flight` vs `fdfs_db_pool_max`, `fdfs_admission_in_flight`, `fdfs_stream_clients`, `fdfs_ready`, `fdfs_seats{show,status}` (only the shows audited last), `fdfs_job_last_success_timestamp_seconds{job}`.
+- Gauges: `fdfs_db_calls_in_flight` vs `fdfs_db_pool_max`, `fdfs_admission_in_flight`, `fdfs_stream_clients`, `fdfs_ready`, `fdfs_seats{show,status}` (the open demo halls, plus every show changed in the last 10 minutes or watched live; refreshed by the reconciler every 5s), `fdfs_job_last_success_timestamp_seconds{job}`.
 
 Logs are one JSON line per request (pino) carrying `request_id`, route, status, latency, and for reserves the outcome, decision path and user. Stdout is the platform log. A ring of the last 2,000 lines, plus the last 500 warnings and errors kept separately so request noise can't push them out, backs `/ops/logs`. [`ops/alerts.yml`](ops/alerts.yml) holds the 2am pages: invariant violation, any 5xx, not ready, stalled sweeper or reconciler, p99 over the SLO, pool saturation, shedding, event-loop lag, memory.
 
@@ -194,21 +200,21 @@ Logs are one JSON line per request (pino) carrying `request_id`, route, status, 
 
 The paths are exactly the spec's. Every error has the shape `{"error": {"code", "message", "request_id", ...}}`, and every response echoes `x-request-id`.
 
-| Method & path                    | Auth        | Notes                                                                                                                      |
-| -------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `POST /auth/login`               | none        | `{username}` → `{token, user_id}`. Demo IdP: an HS256 JWT valid for 24h; `sub` is the user id                              |
-| `POST /auth/tokens`              | none        | `{count ≤ 10000, prefix?, start?}` → tokens for `prefix-start…`; for load tests                                            |
-| `POST /shows`                    | admin key   | `{name, seats[], price_paise, per_user_limit?=4, hold_ttl_seconds?, ephemeral?}` → 201                                     |
-| `GET /shows`                     | none        | Newest first, with counts; `?include_ephemeral=true`                                                                       |
-| `GET /shows/:id`                 | none        | Show + `seats[{label,status}]` + `counts{total,available,held,confirmed,invariant_ok}` from one snapshot (cached ≤ 250 ms) |
-| `GET /shows/:id/audit`           | none        | Books-balance proof: `{ok, counts, violations[]}`                                                                          |
-| `POST /shows/:id/reserve`        | user token  | `{seats[]}` + `Idempotency-Key` header (or `idempotency_key`). 201 new · 200 + `Idempotent-Replayed: true` replay          |
-| `POST /reservations/:id/confirm` | owner token | Hold → confirmed. Idempotent                                                                                               |
-| `POST /reservations/:id/cancel`  | owner token | Releases the seats. Idempotent                                                                                             |
-| `GET /me/reservations`           | user token  | `?show_id=`                                                                                                                |
-| `GET /stream?show=:id`           | none        | Live seat map as server-sent events: `snapshot`, then coalesced `delta`s, `audit` verdicts, heartbeats (see below)         |
-| `GET /healthz` · `GET /readyz`   | none        | Liveness (no I/O) · readiness (DB check on its own pool; fails closed, 503 while draining)                                 |
-| `GET /metrics` · `GET /ops/*`    | none        | Prometheus metrics and the War Room's data (see [Observability](#observability))                                           |
+| Method & path                    | Auth        | Notes                                                                                                                                              |
+| -------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/login`               | none        | `{username}` → `{token, user_id}`. Demo IdP: an HS256 JWT valid for 24h; `sub` is the user id                                                      |
+| `POST /auth/tokens`              | none        | `{count ≤ 10000, prefix?, start?}` → tokens for `prefix-start…`; for load tests                                                                    |
+| `POST /shows`                    | admin key   | `{name, seats[], price_paise, per_user_limit?=4, hold_ttl_seconds?, ephemeral?}` → 201                                                             |
+| `GET /shows`                     | none        | Newest first, with counts; `?include_ephemeral=true`                                                                                               |
+| `GET /shows/:id`                 | none        | Show + `seats[{label,status}]` + `counts{total,available,held,confirmed,invariant_ok}` from one snapshot (cached ≤ 250 ms, dropped on every write) |
+| `GET /shows/:id/audit`           | none        | Books-balance proof: `{ok, counts, violations[]}`                                                                                                  |
+| `POST /shows/:id/reserve`        | user token  | `{seats[]}` + `Idempotency-Key` header (or `idempotency_key`). 201; a replay is the original 201 + `Idempotent-Replayed: true`. All or nothing     |
+| `POST /reservations/:id/confirm` | owner token | Hold → confirmed. Idempotent                                                                                                                       |
+| `POST /reservations/:id/cancel`  | owner token | Releases the seats. Idempotent                                                                                                                     |
+| `GET /me/reservations`           | user token  | `?show_id=`                                                                                                                                        |
+| `GET /stream?show=:id`           | none        | Live seat map as server-sent events: `snapshot`, then coalesced `delta`s, `audit` verdicts, heartbeats (see below)                                 |
+| `GET /healthz` · `GET /readyz`   | none        | Liveness (no I/O) · readiness (DB check on its own pool; fails closed, 503 while draining). Aliases: `/health`, `/ready`                           |
+| `GET /metrics` · `GET /ops/*`    | none        | Prometheus metrics and the War Room's data (see [Observability](#observability))                                                                   |
 
 **Live seat map (`GET /stream`).** An SSE stream that opens with `event: snapshot` `{seq, show, counts, labels[], status}`, where `status` has one character per seat (`a` available, `h` held, `c` confirmed). Seat changes then arrive as `event: delta` `{seq, changes: {label: a|h|c}, counts}`, coalesced per show every `STREAM_COALESCE_MS` (100 ms). The reconciler's verdicts arrive as `event: audit` `{ok, violations, at}`. Apply frames in order and the map equals the database. The hub re-reads every changed seat from Postgres before sending it, so the stream converges even when events arrive out of order. A full snapshot every `STREAM_RESYNC_MS` is only a safety net. Past `STREAM_MAX_CLIENTS` streams, it answers 503 `stream_capacity`.
 
@@ -218,7 +224,7 @@ The paths are exactly the spec's. Every error has the shape `{"error": {"code", 
 - **reconciler:** runs `audit()` every 5s on recently active and watched shows. A violation is logged as `invariant_violation` and counted in `fdfs_invariant_violations_total`.
 - **janitor:** deletes ephemeral shows after 24h and idempotency keys after 24h.
 
-**Status codes:** 400 validation / `unknown_seats` / missing key · 401 no or bad token · 403 not the owner or not admin · 404 unknown show or reservation · 409 `seat_taken`, `per_user_limit`, `reservation_expired`, `reservation_cancelled` · 422 `idempotency_key_reused` · 429 `overloaded` (only past `MAX_QUEUE`, 8,000, in flight; `Retry-After` is the time to drain what is in flight at the recent completion rate) · 503 `db_unavailable` / `contention` (with `Retry-After`). Every request-path DB call has a deadline (`DB_REQUEST_TIMEOUT_MS`, 10s), so an unreachable database is a fast 503, never a hang. A `user_id` in a request body is ignored: identity comes only from the token.
+**Status codes:** 400 validation / `unknown_seats` / missing key · 401 no or bad token · 403 not the owner or not admin · 404 unknown show or reservation · 409 `seat_taken`, `per_user_limit`, `idempotency_key_reused`, `reservation_expired`, `reservation_cancelled` · 429 `overloaded` (only past `MAX_QUEUE`, 8,000, in flight; `Retry-After` is the time to drain what is in flight at the recent completion rate) · 503 `db_unavailable` / `contention` (with `Retry-After`). Every request-path DB call has a deadline (`DB_REQUEST_TIMEOUT_MS`, 10s), so an unreachable database is a fast 503, never a hang. A `user_id` in a request body is ignored: identity comes only from the token.
 
 ## Repository layout
 

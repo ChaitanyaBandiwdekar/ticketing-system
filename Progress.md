@@ -622,7 +622,15 @@ The previous session ended after Phase 7's commits; nothing of Phase 8 had been 
   - the 2am pages
   - what comes next
   - AI usage (directed vs decided)
-- [ ] Push → Render redeploys; verify the demo halls open on the live instance, and measure the cold-start → healthy path.
+- [x] Push → Render redeploys: the live instance (commit `f8a5aba`) opened both demo halls 2 s after boot; `/healthz` 200 in 0.25 s, `/readyz` ready.
+- [x] **Evaluator audit** against the assignment email (see `docs/ai-log.md`):
+  - the same key with different seats is now **409** `idempotency_key_reused` (it was 422), as the email specifies;
+  - a replay now returns the original **201** plus `Idempotent-Replayed: true` (it was 200); the burst and the smoke test read the header;
+  - `fdfs_seats` always carries the open demo halls (the reconciler pins them), so an idle scrape still shows seats available;
+  - `GET /shows/:id` reads your own write: every write drops the show's cached snapshot;
+  - `/health` and `/ready` aliases;
+  - the desktop seat map fits its panel (no hidden right-hand block);
+  - docs: all-or-nothing stated, the admin key's header and a `curl` to create a show.
 - [ ] Live 20k burst against the public URL (needs the live admin key), with its report and War Room screenshots captured into `docs/`.
 
 **Verification so far**
@@ -636,6 +644,7 @@ The previous session ended after Phase 7's commits; nothing of Phase 8 had been 
   - A grader-style burst with no admin key (1,000 minted tokens; 475 four-seat blocks, each sent twice with the same key; 500 users on A12): 474 × 201, 473 × 200 replays, 503 × 409 `seat_taken`, 0 5xx, audit ok.
   - With 95% sold, **FDFS Premiere #2** opened on the next tick.
   - The shows page checked in the browser pane.
+- **After the evaluator audit:** typecheck, lint, format ✅; 29 files, **319 tests** passed (+3: the snapshot cache reads a client's own write, and the `/health` and `/ready` aliases). The seat map was checked at 1280×860 against the live API: the whole hall fits, with no horizontal scroll.
 - **Live, before this phase's push:** `/healthz` 200 in 0.3s, `/readyz` ready, `GET /shows` empty (the gap above).
 
 **Open items / needs you**
