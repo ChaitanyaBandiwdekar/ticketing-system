@@ -197,17 +197,19 @@ Plus the classics, all covered:
 
 ## 5. Observability
 
-- **Counters** (prom-client):
-  - `fdfs_reservations_confirmed_total`
+- **Counters** (`@prometheus-io/client`, the renamed prom-client):
+  - `fdfs_reserve_responses_total{outcome}`: every reserve response, labeled `created`, `replayed`, or the error code the client saw. This is the counter the burst diffs against, outcome by outcome; all the views below are fed by the same recording call (`obs/metrics.ts`), so they cannot disagree
+  - `fdfs_reservations_confirmed_total`, `fdfs_reservations_held_total`
   - `fdfs_reservations_declined_total{reason=seat_taken|per_user_limit|idempotent_replay|idempotency_key_reused|invalid|not_found}`
-  - `fdfs_holds_expired_total`, `fdfs_reservations_cancelled_total`
+  - `fdfs_holds_expired_total`, `fdfs_hold_seats_released_total`, `fdfs_reservations_cancelled_total`
   - `fdfs_identity_spoof_ignored_total`
   - `fdfs_invariant_violations_total`
-  - `fdfs_http_responses_total{route,status_class}`
-- **Gauges:** `fdfs_seats{show,status}` (DB-derived, recent shows only), pool in-use/waiting, admission queue depth, and event-loop lag.
-- **Histograms:** `fdfs_reservation_duration_seconds{outcome}`, with buckets up to 30s for the free tier.
-- **Logs:** pino JSON. `request_id` comes from an incoming `x-request-id` or is generated, and is echoed in the response header and in error bodies. Each reservation logs one outcome line (user, show, seats, code, latency). A redacted ring buffer (last ~2k lines) is exposed at `/ops/logs` and `/stream?logs=1`, giving **public log access** without paid Render log streams.
+  - `fdfs_http_responses_total{route,status_class}` (route templates only), `fdfs_audits_total{result}`, `fdfs_db_retries_total{sqlstate}`, `fdfs_admission_shed_total`
+- **Gauges:** `fdfs_seats{show,status}` (from the reconciler's last audits: DB-derived, at most 25 shows, rebuilt each scrape), `fdfs_db_calls_in_flight` vs `fdfs_db_pool_max` (postgres.js has no pool stats, so request-path calls are counted around the call; above the pool size they are queueing), admission in flight, stream clients, `fdfs_ready`, per-job last success and consecutive failures, and Node's default process/event-loop metrics.
+- **Histograms:** `fdfs_reservation_duration_seconds{outcome}` and `fdfs_http_request_duration_seconds{route}`, with buckets up to 30s for the free tier.
+- **Logs:** pino JSON. `request_id` comes from an incoming `x-request-id` or is generated, and is echoed in the response header and in error bodies. Each reservation logs one outcome line (user, show, seats, code, latency). A redacted ring buffer (last ~2k lines, plus the last 500 warn/error lines kept separately so a stampede's request lines can't evict them) is exposed at `/ops/logs` and in the War Room feed `/ops/stream`, giving **public log access** without paid Render log streams. Public lines are allow-listed fields only, with stack traces dropped.
 - **Reconciler:** every few seconds it runs the invariant + `audit` for active shows → `fdfs_invariant_violations_total`. A 1s time-series ring buffer at `/ops/timeseries` feeds the War Room.
+- **War Room feed:** one 1s timer closes the second, rebuilds `/ops/summary` and pushes a single `tick` frame (point + summary + new log lines) to every open `/ops/stream`, so dashboards add no per-viewer work. Ops routes skip admission control and the access log, so watching never shows up in what is watched.
 - **Ops:**
   - `docker compose --profile obs up` brings up Prometheus + a provisioned Grafana dashboard.
   - `ops/alerts.yml` defines the 2am pages: invariant violation >0, 5xx >0, readiness failing, p99 > SLO, pool saturation sustained, sweeper lag.
@@ -246,7 +248,7 @@ A dark "opening night" box-office console, built with the design skill during th
 
 ```
 server/src/{config.ts, main.ts, db/{pool,migrate}.ts, engine/{reserve,lifecycle,audit,types}.ts,
-            http/{app,auth,errors,admission}.ts + routes/, obs/{logger,metrics,events,logbuffer,timeseries}.ts,
+            http/{app,auth,errors,admission}.ts + routes/, obs/{logger,metrics,logbuffer,timeseries,opshub,types}.ts,
             jobs/{sweeper,reconciler,janitor}.ts}
 db/migrations/0001_schema.sql, 0002_reserve_fn.sql, 0003_lifecycle_fns.sql, 0004_audit_fn.sql
 web/            Vite React app (routes under /app)

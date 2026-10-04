@@ -127,3 +127,33 @@ Production still runs Node 22 in Docker.
 - Fixed from the visual pass: the keyboard focus ring showing on mouse clicks; the header overflowing on tablets and phones; a stale "held" notice after the hold lapsed; phone notices rendering out of sight.
 
 **Human:** said to check status and continue with the next phase while they get the Supabase and Render credentials (Phase 3b stays blocked).
+
+## Phase 3b: Smoke deploy
+
+**AI implemented:** the checks against the live Render URL (health, readiness, UI headers, a 1k and a 4k mini-burst with outcome, latency and audit summaries) using a scratch script. Since the admin key exists only in Render, the script created its ephemeral show directly in the database.
+
+**Decisions made during the phase:**
+
+- The full test suite was not pointed at Supabase: it is the live database, and the suite's non-ephemeral test shows would clutter the live show list. CI already runs the suite on Postgres 17 and behind PgBouncer.
+- The 4k run's 422s were traced to the script reusing run 1's keys for a different show: correct engine behaviour, not a bug.
+
+**Human:** deployed the project to Render with the Supabase credentials and said to check whatever was needed and continue with the next phase.
+
+## Phase 7: Observability + War Room
+
+**AI implemented:** the metrics registry, the per-second time series, the log ring and process logger, the ops hub and routes, the instrumentation of routes and jobs, the War Room page and its SVG chart component, the Prometheus/Grafana compose profile, the alert rules, the CI checks, the smoke-script additions, and all tests. No subagents were used. Before adding the metrics library it checked the current client docs (Context7) and found that `prom-client` has been renamed to `@prometheus-io/client` and deprecated. It ran the dataviz palette validator on the chart colours for the dark surface. The visual check ran in the built-in browser pane against the production bundle under a scripted mixed load, at desktop and phone widths.
+
+**Decisions made during the phase:**
+
+- Each recording call feeds the Prometheus counter, the summary totals and the time series together, and reserve outcomes are labeled exactly as a client sees them (`created`, `replayed`, or the error code). A burst can then diff the metric against its own observations, outcome by outcome. The phase's test does exactly that.
+- Ops routes skip admission control and the access log, so watching the system never shows up in what is watched; a test asserts no ops route appears in `/metrics` or the log tail.
+- Public log lines are an allow-list of fields with stack traces dropped, on top of pino's redaction.
+- One timer and one summary per second, however many dashboards are open.
+- Found during the visual pass under load:
+  - at ~300 lines/s the log ring covered seconds, so warnings and errors got their own ring;
+  - repeated log lines between `hello` and the first `tick` produced duplicate React keys and stale rows in the request filter;
+  - event-loop lag included the monitor's sampling interval;
+  - layout fixes for tiles, the pool-size label, direct labels and phone axes.
+- Alert rules are validated with `promtool check config` in CI. Exact-match `promtool test rules` was dropped as brittle against templated annotations.
+
+**Human:** said to continue with the next phase after deploying.

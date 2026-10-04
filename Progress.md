@@ -2,19 +2,19 @@
 
 Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its checks run, this file updated, a commit, and a **hard stop** until the go-ahead ("continue").
 
-| Phase | Scope                                   | Status                       |
-| ----- | --------------------------------------- | ---------------------------- |
-| 0     | Foundation                              | ✅ done                      |
-| 1     | Core engine I: atomic reserve           | ✅ done                      |
-| 2     | Core engine II: lifecycle + audit       | ✅ done                      |
-| 3     | API service                             | ✅ done                      |
-| 3b    | Smoke deploy (Render free + Supabase)   | ⏸ blocked: needs credentials |
-| 4     | Realtime layer (SSE, jobs)              | ✅ done                      |
-| 5     | UI I: shell + shows                     | ✅ done                      |
-| 6     | UI II: live hall                        | ✅ done                      |
-| 7     | Observability + War Room                | ⬜ not started               |
-| 8     | Burst CLI + Stampede simulator + tuning | ⬜ not started               |
-| 9     | Final deploy + docs                     | ⬜ not started               |
+| Phase | Scope                                   | Status         |
+| ----- | --------------------------------------- | -------------- |
+| 0     | Foundation                              | ✅ done        |
+| 1     | Core engine I: atomic reserve           | ✅ done        |
+| 2     | Core engine II: lifecycle + audit       | ✅ done        |
+| 3     | API service                             | ✅ done        |
+| 3b    | Smoke deploy (Render free + Supabase)   | ✅ done        |
+| 4     | Realtime layer (SSE, jobs)              | ✅ done        |
+| 5     | UI I: shell + shows                     | ✅ done        |
+| 6     | UI II: live hall                        | ✅ done        |
+| 7     | Observability + War Room                | ✅ done        |
+| 8     | Burst CLI + Stampede simulator + tuning | ⬜ not started |
+| 9     | Final deploy + docs                     | ⬜ not started |
 
 ---
 
@@ -409,3 +409,97 @@ The Phase 3 push failed CI's compose job, and the first fix revealed a second fa
 - **Phase 3b** still needs the Supabase project (Singapore) and the pooler URLs/password, plus a Render account connected to the repo.
 
 **Commits:** see `git log`. Phase 6 is a feature commit and a docs commit.
+
+---
+
+## Phase 3b: Smoke deploy ✅
+
+You created the Supabase project (Singapore) and deployed the `render.yaml` blueprint: <https://fdfs-dkyx.onrender.com>.
+
+**Verification** (against the live URL, from India)
+
+- `/healthz` and `/readyz` 200 in ~0.25s; `/app/` served with its CSP; `GET /shows` from Supabase.
+- **1k mini-burst** (100 in flight, 500 seats, 20% of requests on 5 hot seats): 294 created, 706 `seat_taken`, **0 5xx, 0 network errors**. About 75 req/s; p50 1.2s, p95 2.0s, p99 2.7s. `invariant_ok` and `/audit` were both green.
+- **4k burst** (400 in flight): about 105 req/s; p50 4.2s, p99 7.1s. Again **0 5xx**, and the audit was green. Its 294 × 422 `idempotency_key_reused` were correct. The script reused run 1's users and keys against a new show, and the request fingerprint includes the show, so a reused key with a different request is refused.
+- Throughput is CPU-bound on the 0.1-CPU free instance. Every step is latency, never errors: "slow is fine, 5xx is not" holds. Phase 8 tunes this.
+
+**Deviations from plan**
+
+- `npm run test:remote` was **not** run against Supabase. It is the live database, and the suite creates non-ephemeral test shows that would clutter the live show list. Burst shows from the mini-bursts are ephemeral (the janitor deletes them after 24h). The same suite runs on Postgres 17 in CI and behind PgBouncer in the compose job.
+- The bursts created their show directly in the database: `ADMIN_API_KEY` exists only in Render (`generateValue`). Memory could not be read on Render without the dashboard; Phase 7's `/metrics` and War Room now expose RSS publicly.
+
+**Open items / needs you**
+
+- To run `scripts/smoke.sh` against the live URL, pass the admin key from the Render dashboard: `scripts/smoke.sh https://fdfs-dkyx.onrender.com <ADMIN_API_KEY>`.
+
+---
+
+## Phase 7: Observability + War Room ✅
+
+**Deliverables**
+
+- [x] `server/src/obs/metrics.ts`: a Prometheus registry on `@prometheus-io/client` (prom-client was renamed and deprecated).
+  - One recording call per event feeds the Prometheus instrument, the `/ops/summary` totals, and the open second of the time series together.
+  - `fdfs_reserve_responses_total{outcome}` covers every reserve response: `created`, `replayed`, or the error code the client saw. It is recorded once, in the shared `onResponse` hook.
+  - Plus the plan's counters (confirmed, held, declined by reason, cancelled, holds expired, seats released, spoof ignored, invariant violations, audits, DB retries, shed) and latency histograms by outcome and by route template.
+  - Gauges: DB calls in flight vs pool size, admission, streams, readiness, `fdfs_seats{show,status}` from the reconciler's last audits, and job last-success and failure counts. Node's default process and event-loop metrics are included.
+- [x] `server/src/obs/timeseries.ts`: one point per second for 10 minutes.
+  - Reserve outcomes, HTTP status classes, and confirmed/held/cancelled/expired.
+  - Reserve latency p50/p95/p99, from a 1,024-sample reservoir per second.
+  - The peak of DB calls in flight during the second, plus sampled gauges.
+- [x] `server/src/obs/logbuffer.ts` + `logger.ts`: one process logger (pino multistream) writes to stdout and to a ring of 2,000 lines plus 500 warn/error lines.
+  - Public lines are an allow-list of fields with stacks dropped, on top of pino's redaction.
+  - Query by `after`, `request_id`, `level`, `limit`.
+- [x] `server/src/obs/opshub.ts`: one 1s timer closes the second, rebuilds the summary, and pushes one `tick` per second to every `/ops/stream`. `hello` on connect carries 5 minutes of history. It caps 50 dashboards and drops one that stops reading. The wire types live in `obs/types.ts`, shared with the UI.
+- [x] Routes (`server/src/http/routes/ops.ts`): `GET /metrics`, `/ops/summary`, `/ops/timeseries`, `/ops/logs`, `/ops/stream`. All are ops routes: no admission slot and no access-log line.
+- [x] Wiring:
+  - reserve and lifecycle routes record outcomes, spoofs and DB retries (via the engine's `onRetry` hook);
+  - the sweeper reports releases and expiries, and the reconciler reports every audit;
+  - `Periodic` exposes last success and consecutive failures;
+  - `Readiness.peek()` reads the cached verdict without probing.
+- [x] **War Room** (`/app/war-room`, nav "War Room" / "Ops" on phones):
+  - headline tiles: invariant, reserve req/s, confirmed, p99, 5xx, DB pool;
+  - charts (dependency-free SVG `TimeChart`, crosshair tooltip, arrow-key stepping, table twin): reserve outcomes per second (stacked), latency (ordinal ramp, direct labels), DB in flight vs a pool-size line, event-loop lag, memory;
+  - the reconciler's verdict per show with its arithmetic, and job health;
+  - a log tail: level filter, pause, click a request id to follow that request (its older lines are fetched from the server).
+  - Palettes were validated with the dataviz validator on the dark surface. Outcomes: worst adjacent CVD ΔE 8.4, normal vision 19.3, all ≥ 3:1. Latency: monotone ordinal ramp.
+- [x] `ops/`: `prometheus.yml`, `alerts.yml` (11 rules: page on invariant violation, any 5xx, target down, not ready, stalled sweeper/reconciler; ticket on p99 > 5s, pool saturation, shedding, loop lag, memory), Grafana datasource + dashboard provisioning, and the generated "FDFS overview" dashboard. `docker compose --profile obs up -d` runs Prometheus v3.15.0 and Grafana 13.2.3.
+- [x] CI:
+  - `promtool check config` (config + rules) and `docker compose --profile obs config`;
+  - the compose job starts Prometheus, waits for the app target to be `up`, and checks that the alert rules loaded.
+- [x] `scripts/smoke.sh` now also checks `/metrics` (created reserves counted, 0 violations), `/ops/summary` (invariant ok) and that the log tail holds the spoofed request's warning.
+
+**Verification**
+
+- `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅ · `npm run build` ✅
+- `npm test` ✅: 25 files, 287 tests (+21)
+  - **The phase check** (`test/api/ops.test.ts`): a concurrent mixed burst runs while the seat map is polled. It covers a hot seat, a spread, one user ×6 at limit 2, same-key retries, key reuse, a spoof, an unknown seat, an unknown show, no token and no key. Every snapshot during the burst reconciles. For each of the 9 outcomes, the delta of `fdfs_reserve_responses_total` equals the count clients observed, and the total equals the request count. Declined-by-reason, confirmed, spoof and histogram counts agree. Reserve 5xx = 0. After a reconciler tick: `fdfs_invariant_violations_total` 0, `fdfs_seats` equals the DB counts, and `/ops/summary` says `invariant_ok`.
+  - The hold lifecycle counts each transition once (repeat confirm or cancel adds nothing), and the sweeper's expiries are counted.
+  - Route labels are templates: no show id ever appears in `/metrics`, and ops routes are never counted.
+  - `/ops/timeseries` points, and the `/ops/stream` `hello` + `tick` frames over real HTTP.
+  - Log tail: a request's lines found by its `x-request-id` (spoof warning + request line), nothing that looks like a token, ops traffic never logged, the level filter, and a bad level → 400.
+  - Unit: time-series rollover, peak tracking, bounds, reservoir sampling, window latency. Log buffer: capacity, paging, filters, field allow-list, stack stripping, warn/error lines surviving request noise, the real pino logger's redacted lines.
+- **Local burst against the production bundle:** 2,350 mixed reserves. The load script's observed outcomes and `/metrics` agreed exactly (684 created, 1,373 `seat_taken`, 166 `per_user_limit`, 87 key reused, 28 unknown seats, 12 replays). 0 violations, 0 5xx.
+- **Visual check** in the browser pane (1280×900 and 375×812, no horizontal scroll) while that load ran: tiles, all five charts with tooltips, verdicts, jobs, and the request filter.
+
+**Fixed while testing**
+
+- Under load (~300 lines/s), the 2,000-line ring covered seconds, so a clicked request's lines were already gone. Warn/error lines now have their own ring, and the page keeps the lines it already held for that request.
+- The first `tick` after `hello` could repeat log lines; duplicate React keys then left stale rows of another request in the filtered view. The client now appends only newer `seq`s.
+- Event-loop lag included the monitor's 20ms sampling interval (an idle loop read ~20ms); it is now subtracted.
+- Tile captions truncated at six columns; the pool-size label sat on top of the live data; the latency labels vanished whenever the last second had no reserves; x-axis labels collided on phones.
+- Local tooling: `.pg/serve.sh` now pins `DATABASE_URL_SESSION` too. With real Supabase URLs in `.env`, migrations otherwise went to Supabase (a no-op there) while the app used the empty local DB.
+
+**Deviations from plan**
+
+- `@prometheus-io/client` instead of `prom-client` (renamed upstream; the old package is deprecated).
+- The log tail streams over the War Room's `/ops/stream`, not `/stream?logs=1`: one feed for dashboards, and the seat-map stream stays seat-only.
+- Pool saturation is "DB calls in flight vs pool size", measured around each request-path call: postgres.js exposes no pool statistics.
+- Alert rules are checked with `promtool check config` rather than `promtool test rules`: annotations with templated values make exact-match rule tests brittle.
+
+**Open items / needs you**
+
+- **Pushing this phase redeploys the live service** (`autoDeployTrigger: commit`). The War Room is then at <https://fdfs-dkyx.onrender.com/app/war-room>.
+- Supabase's free tier pauses after 7 idle days. The keepalive cron is in the Phase 9 plan; until then, any visit to the live URL keeps it awake.
+
+**Commits:** see `git log`. Phase 7 is a feature commit and a docs commit.
