@@ -1,0 +1,38 @@
+# Render Blueprint: one free Docker web service in Singapore, next to the Supabase project.
+# Secrets are sync:false (entered once in the dashboard, never committed). Migrations run on boot.
+services:
+  - type: web
+    name: fdfs
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "8080"
+      - key: LOG_LEVEL
+        value: info
+      # Supabase pooler URLs: transaction (6543) at runtime, session (5432) for migrations.
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_SESSION
+        sync: false
+      - key: SUPABASE_PROJECT_REF
+        sync: false
+      # Free Supabase tier: keep the app pool well under the pooler's client limit.
+      - key: DB_POOL_MAX
+        value: "10"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: AUTH_DEMO_LOGIN
+        value: "true"
+      # Free instance has 512 MB; keep realtime fan-out modest.
+      - key: STREAM_MAX_CLIENTS
+        value: "500"
