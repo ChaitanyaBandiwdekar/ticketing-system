@@ -10,7 +10,7 @@
  * - every error mapped to the one error shape; only genuine bugs become 500
  */
 import { randomUUID } from "node:crypto";
-import Fastify, { LogController, type FastifyInstance } from "fastify";
+import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from "fastify";
 import type { Config } from "../config";
 import { withDeadline } from "../db/deadline";
 import type { Sql } from "../db/pool";
@@ -26,6 +26,7 @@ import { healthRoutes } from "./routes/health";
 import { reservationRoutes } from "./routes/reservations";
 import { showRoutes } from "./routes/shows";
 import { streamRoutes } from "./routes/stream";
+import { webRoutes } from "./routes/web";
 
 declare module "fastify" {
   interface FastifyContextConfig {
@@ -67,6 +68,13 @@ export type AppContext = AppDeps & {
 };
 
 const REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** Ops endpoints and the UI's static files: never shed by admission, never access-logged. */
+function isQuiet(request: FastifyRequest): boolean {
+  return (
+    request.routeOptions.config.ops === true || !!request.routeOptions.url?.startsWith("/app/")
+  );
+}
 const KEEP_ALIVE_MS = 65_000;
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -120,8 +128,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("x-request-id", request.id);
-    const { ops, stream } = request.routeOptions.config;
-    if (ops || stream) return;
+    if (isQuiet(request) || request.routeOptions.config.stream) return;
     const release = ctx.admission.tryEnter();
     if (!release) {
       throw new ApiError(
@@ -139,7 +146,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   app.addHook("onResponse", async (request, reply) => {
-    if (request.routeOptions.config.ops || request.streamed) return;
+    if (isQuiet(request) || request.streamed) return;
     const status = reply.statusCode;
     const line = {
       method: request.method,
@@ -169,5 +176,6 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(showRoutes(ctx));
   await app.register(reservationRoutes(ctx));
   await app.register(streamRoutes(ctx));
+  await app.register(webRoutes(ctx));
   return app;
 }

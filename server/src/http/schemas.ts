@@ -54,6 +54,13 @@ export const showProperties = {
   hold_ttl_seconds: { type: ["integer", "null"] },
   total_seats: { type: "integer" },
   ephemeral: { type: "boolean" },
+  layout: {
+    type: ["object", "null"],
+    properties: {
+      aisles_after: { type: "array", items: { type: "integer" } },
+      row_gaps_after: { type: "array", items: { type: "string" } },
+    },
+  },
   created_at: { type: "string" },
   counts: countsSchema,
 } as const;

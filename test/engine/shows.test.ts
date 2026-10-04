@@ -7,6 +7,7 @@ import {
   validateShowInput,
   type CreateShowInput,
 } from "../../server/src/engine/shows";
+import type { ShowLayout } from "../../server/src/engine/types";
 import { uniq, useTestSql } from "../helpers/db";
 import { book, makeShow } from "../helpers/engine";
 
@@ -94,6 +95,55 @@ describe("validateShowInput", () => {
   });
 });
 
+describe("validateShowInput: layout", () => {
+  const layout = (l: Partial<ShowLayout>): ShowLayout => ({
+    aisles_after: [],
+    row_gaps_after: [],
+    ...l,
+  });
+
+  it("accepts no layout, an empty layout and the boundary values", () => {
+    expect(issuesFor({ layout: null })).toEqual([]);
+    expect(issuesFor({ layout: undefined })).toEqual([]);
+    expect(issuesFor({ layout: layout({}) })).toEqual([]);
+    expect(
+      issuesFor({
+        layout: layout({
+          aisles_after: [1, 1000, ...Array.from({ length: 48 }, (_, i) => i + 2)],
+          row_gaps_after: ["A", "ZZ", "a1", "ABCDEFGH", ...Array.from({ length: 46 }, () => "E")],
+        }),
+      }),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ["aisle 0", { aisles_after: [0] }, /aisles_after/],
+    ["aisle 1001", { aisles_after: [1001] }, /aisles_after/],
+    ["fractional aisle", { aisles_after: [2.5] }, /aisles_after/],
+    ["NaN aisle", { aisles_after: [Number.NaN] }, /aisles_after/],
+    ["51 aisles", { aisles_after: Array.from({ length: 51 }, (_, i) => i + 1) }, /aisles_after/],
+    ["aisles not an array", { aisles_after: 4 as unknown as number[] }, /aisles_after/],
+    ["empty row label", { row_gaps_after: [""] }, /row_gaps_after/],
+    ["9-char row label", { row_gaps_after: ["ABCDEFGHI"] }, /row_gaps_after/],
+    ["row label with a dash", { row_gaps_after: ["A-1"] }, /row_gaps_after/],
+    ["non-string row label", { row_gaps_after: [5 as unknown as string] }, /row_gaps_after/],
+    ["51 row gaps", { row_gaps_after: Array.from({ length: 51 }, () => "A") }, /row_gaps_after/],
+    ["row gaps missing", { row_gaps_after: undefined as unknown as string[] }, /row_gaps_after/],
+  ] as [string, Partial<ShowLayout>, RegExp][])("reports %s", (_label, overrides, pattern) => {
+    const issues = issuesFor({ layout: layout(overrides) });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatch(pattern);
+  });
+
+  it("reports both layout fields alongside other problems", () => {
+    const issues = issuesFor({
+      pricePaise: 0,
+      layout: layout({ aisles_after: [-1], row_gaps_after: ["?"] }),
+    });
+    expect(issues).toHaveLength(3);
+  });
+});
+
 describe("createShow", () => {
   it("throws ShowValidationError with the issues and writes nothing for invalid input", async () => {
     const name = uniq("invalid");
@@ -136,6 +186,47 @@ describe("createShow", () => {
     const rows = await sql<{ label: string }[]>`
       select label from seats where show_id = ${show.id}::uuid order by id`;
     expect(rows.map((r) => r.label)).toEqual(seats);
+  });
+
+  it("stores no layout as null", async () => {
+    const show = await createShow(sql, valid(), { maxSeatsPerShow: MAX_SEATS });
+    expect(show.layout).toBeNull();
+  });
+
+  it("stores the layout normalized (aisles sorted and unique, gaps unique in order)", async () => {
+    const show = await createShow(
+      sql,
+      valid({ layout: { aisles_after: [12, 4, 12, 8], row_gaps_after: ["E", "B", "E"] } }),
+      { maxSeatsPerShow: MAX_SEATS },
+    );
+    const expected = { aisles_after: [4, 8, 12], row_gaps_after: ["E", "B"] };
+    expect(show.layout).toEqual(expected);
+
+    const [row] = await sql<{ layout: ShowLayout; type: string }[]>`
+      select layout, jsonb_typeof(layout) as type from shows where id = ${show.id}::uuid`;
+    expect(row!.type).toBe("object");
+    expect(row!.layout).toEqual(expected);
+    expect((await getShowSnapshot(sql, show.id))!.show.layout).toEqual(expected);
+  });
+
+  it("rejects an invalid layout and writes nothing", async () => {
+    const name = uniq("bad_layout");
+    const err = await createShow(
+      sql,
+      valid({ name, layout: { aisles_after: [0], row_gaps_after: [] } }),
+      { maxSeatsPerShow: MAX_SEATS },
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(ShowValidationError);
+    const [row] = await sql<{ n: number }[]>`
+      select count(*)::int as n from shows where name = ${name}`;
+    expect(row!.n).toBe(0);
+  });
+
+  it("the database refuses a non-object layout", async () => {
+    const show = await makeShow(sql);
+    await expect(
+      sql`update shows set layout = '[1, 2]'::jsonb where id = ${show.id}::uuid`,
+    ).rejects.toThrow(/check constraint/);
   });
 });
 

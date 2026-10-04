@@ -30,6 +30,7 @@ const EnvSchema = z.object({
   HOLD_SWEEP_INTERVAL_MS: intWithDefault(1_000, 100, 60_000),
   MAX_QUEUE: intWithDefault(20_000, 1, 1_000_000),
   SNAPSHOT_CACHE_MS: intWithDefault(250, 0, 10_000),
+  WEB_DIST_DIR: z.string().min(1).default("dist/web"),
 
   STREAM_MAX_CLIENTS: intWithDefault(2_000, 1, 100_000),
   STREAM_COALESCE_MS: intWithDefault(100, 1, 5_000),
@@ -56,7 +57,8 @@ export type Config = {
   };
   admission: { maxQueue: number };
   /** GET /shows/:id micro-cache: one serialized snapshot per show for this long (0 = off). */
-  http: { snapshotCacheMs: number };
+  /** webDir: the built SPA (Vite output), served under /app/. */
+  http: { snapshotCacheMs: number; webDir: string };
   /** GET /stream (SSE): connection cap, delta coalescing window, heartbeat, full resync period. */
   realtime: { maxClients: number; coalesceMs: number; heartbeatMs: number; resyncMs: number };
   /** Background jobs (the sweeper's interval lives under `reservations`). */
@@ -104,7 +106,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       holdSweepIntervalMs: e.HOLD_SWEEP_INTERVAL_MS,
     },
     admission: { maxQueue: e.MAX_QUEUE },
-    http: { snapshotCacheMs: e.SNAPSHOT_CACHE_MS },
+    http: { snapshotCacheMs: e.SNAPSHOT_CACHE_MS, webDir: e.WEB_DIST_DIR },
     realtime: {
       maxClients: e.STREAM_MAX_CLIENTS,
       coalesceMs: e.STREAM_COALESCE_MS,

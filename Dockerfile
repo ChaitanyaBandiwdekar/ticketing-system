@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
-# FirstDayFirstShow API. Multi-stage: build with dev deps, ship only production deps + one bundle.
+# FirstDayFirstShow API + UI. Multi-stage: build with dev deps, ship only production deps, the
+# server bundle and the static UI (dist/web, served under /app/).
 
 FROM node:22-alpine AS build
 WORKDIR /app
@@ -8,6 +9,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY tsconfig.json ./
 COPY server ./server
+COPY web ./web
 RUN npm run build
 
 FROM node:22-alpine AS prod-deps

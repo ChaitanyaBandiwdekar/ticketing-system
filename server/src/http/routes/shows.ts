@@ -12,6 +12,7 @@ type CreateShowBody = {
   per_user_limit?: number;
   hold_ttl_seconds?: number | null;
   ephemeral?: boolean;
+  layout?: { aisles_after?: number[]; row_gaps_after?: string[] } | null;
 };
 
 const showNotFound = () => new ApiError(404, "show_not_found", "no such show");
@@ -45,6 +46,14 @@ export const showRoutes =
               per_user_limit: { type: "integer", minimum: 1, maximum: 100 },
               hold_ttl_seconds: { type: ["integer", "null"], minimum: 1, maximum: 3600 },
               ephemeral: { type: "boolean" },
+              layout: {
+                type: ["object", "null"],
+                additionalProperties: false,
+                properties: {
+                  aisles_after: { type: "array", maxItems: 50, items: { type: "integer" } },
+                  row_gaps_after: { type: "array", maxItems: 50, items: { type: "string" } },
+                },
+              },
             },
           },
           response: {
@@ -65,6 +74,12 @@ export const showRoutes =
                 perUserLimit: b.per_user_limit ?? config.reservations.defaultPerUserLimit,
                 holdTtlSeconds: b.hold_ttl_seconds ?? null,
                 ephemeral: b.ephemeral ?? false,
+                layout: b.layout
+                  ? {
+                      aisles_after: b.layout.aisles_after ?? [],
+                      row_gaps_after: b.layout.row_gaps_after ?? [],
+                    }
+                  : null,
               },
               { maxSeatsPerShow: config.reservations.maxSeatsPerShow },
             ),

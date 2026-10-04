@@ -84,6 +84,63 @@ describe("POST /shows", () => {
     expect(errorOf(bad).issues).toEqual([expect.stringMatching(/invalid seat labels/)]);
   });
 
+  it("layout: stored normalized, returned on create, list and read; absent means null", async () => {
+    const res = await create({
+      ...valid(),
+      layout: { aisles_after: [3, 1, 3], row_gaps_after: ["A", "A"] },
+    });
+    expect(res.statusCode).toBe(201);
+    const layout = { aisles_after: [1, 3], row_gaps_after: ["A"] };
+    expect(res.json().layout).toEqual(layout);
+
+    const id = res.json<{ id: string }>().id;
+    expect((await t.app.inject({ url: `/shows/${id}` })).json().layout).toEqual(layout);
+    const listed = (await t.app.inject({ url: "/shows?limit=500" }))
+      .json<{ shows: { id: string; layout: unknown }[] }>()
+      .shows.find((s) => s.id === id);
+    expect(listed?.layout).toEqual(layout);
+
+    for (const body of [valid(), { ...valid(), layout: null }]) {
+      const plain = await create(body);
+      expect(plain.statusCode).toBe(201);
+      expect(plain.json().layout).toBeNull();
+    }
+  });
+
+  it("layout: unknown keys are dropped, like everywhere else in the API", async () => {
+    const res = await create({ ...valid(), layout: { aisles_after: [2], stage: "north" } });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().layout).toEqual({ aisles_after: [2], row_gaps_after: [] });
+  });
+
+  it("layout: a missing field defaults to empty", async () => {
+    const res = await create({ ...valid(), layout: { aisles_after: [2] } });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().layout).toEqual({ aisles_after: [2], row_gaps_after: [] });
+
+    const empty = await create({ ...valid(), layout: {} });
+    expect(empty.json().layout).toEqual({ aisles_after: [], row_gaps_after: [] });
+  });
+
+  it("layout: 400 validation_error for bad shapes and values", async () => {
+    const cases: Record<string, unknown> = {
+      "not an object": [4, 12],
+      "a string": "aisles",
+      "aisle 0": { aisles_after: [0] },
+      "aisle 1001": { aisles_after: [1001] },
+      "fractional aisle": { aisles_after: [2.5] },
+      "51 aisles": { aisles_after: Array.from({ length: 51 }, (_, i) => i + 1) },
+      "bad row label": { row_gaps_after: ["A B"] },
+      "long row label": { row_gaps_after: ["ABCDEFGHI"] },
+      "51 row gaps": { row_gaps_after: Array.from({ length: 51 }, () => "A") },
+    };
+    for (const [label, layout] of Object.entries(cases)) {
+      const res = await create({ ...valid(), layout });
+      expect(res.statusCode, label).toBe(400);
+      expect(errorOf(res).code, label).toBe("validation_error");
+    }
+  });
+
   it("authenticates before validating: an invalid body without credentials is 401", async () => {
     const res = await create({ nonsense: true }, {});
     expect(res.statusCode).toBe(401);

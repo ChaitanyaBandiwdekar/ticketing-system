@@ -1,9 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -12,10 +13,8 @@
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "types": ["node"],
+    "types": ["vite/client"],
     "noEmit": true
   },
-  "include": ["server/src", "scripts", "test", "vitest.config.ts", "eslint.config.js"],
-  // UI module tests need the DOM lib; web/tsconfig.json checks them.
-  "exclude": ["test/web"]
+  "include": ["src", "vite.config.ts", "../test/web"]
 }

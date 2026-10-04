@@ -1,7 +1,7 @@
 /** Show creation and the one-snapshot read that the seat map and the invariant badge rely on. */
 import type { Sql } from "../db/pool";
 import { isUuid } from "./ids";
-import type { SeatCounts, SeatStatus, Show, ShowSnapshot } from "./types";
+import type { SeatCounts, SeatStatus, Show, ShowLayout, ShowSnapshot } from "./types";
 
 export type CreateShowInput = {
   name: string;
@@ -10,6 +10,7 @@ export type CreateShowInput = {
   perUserLimit: number;
   holdTtlSeconds?: number | null;
   ephemeral?: boolean;
+  layout?: ShowLayout | null;
 };
 
 export class ShowValidationError extends Error {
@@ -21,6 +22,8 @@ export class ShowValidationError extends Error {
 
 const SEAT_LABEL = /^[A-Za-z0-9-]{1,16}$/;
 const MAX_PRICE_PAISE = 10_000_000; // ₹1,00,000 per seat keeps every amount a safe JS integer.
+const MAX_LAYOUT_ENTRIES = 50;
+const ROW_LABEL = /^[A-Za-z0-9]{1,8}$/;
 
 export function validateShowInput(input: CreateShowInput, maxSeatsPerShow: number): string[] {
   const issues: string[] = [];
@@ -49,11 +52,32 @@ export function validateShowInput(input: CreateShowInput, maxSeatsPerShow: numbe
   if (ttl != null && (!Number.isInteger(ttl) || ttl < 1 || ttl > 3600)) {
     issues.push("hold_ttl_seconds must be an integer between 1 and 3600");
   }
+  if (input.layout != null) issues.push(...validateLayout(input.layout));
+  return issues;
+}
+
+function validateLayout(layout: ShowLayout): string[] {
+  const issues: string[] = [];
+  const { aisles_after: aisles, row_gaps_after: gaps } = layout;
+  if (
+    !Array.isArray(aisles) ||
+    aisles.length > MAX_LAYOUT_ENTRIES ||
+    aisles.some((n) => !Number.isInteger(n) || n < 1 || n > 1000)
+  ) {
+    issues.push(`layout.aisles_after must be up to ${MAX_LAYOUT_ENTRIES} seat numbers (1-1000)`);
+  }
+  if (
+    !Array.isArray(gaps) ||
+    gaps.length > MAX_LAYOUT_ENTRIES ||
+    gaps.some((r) => typeof r !== "string" || !ROW_LABEL.test(r))
+  ) {
+    issues.push(`layout.row_gaps_after must be up to ${MAX_LAYOUT_ENTRIES} row labels`);
+  }
   return issues;
 }
 
 const SHOW_COLUMNS = `id, name, price_paise::float8 as price_paise, per_user_limit, hold_ttl_seconds,
-  total_seats, ephemeral, created_at`;
+  total_seats, ephemeral, layout, created_at`;
 
 /** Creates the show and every seat (available) in one transaction. Seat ids follow input order. */
 export async function createShow(
@@ -66,8 +90,9 @@ export async function createShow(
 
   return sql.begin(async (tx) => {
     const [show] = await tx.unsafe<Show[]>(
-      `insert into shows (name, price_paise, per_user_limit, hold_ttl_seconds, total_seats, ephemeral)
-       values ($1, $2, $3, $4, $5, $6)
+      `insert into shows (name, price_paise, per_user_limit, hold_ttl_seconds, total_seats, ephemeral,
+                          layout)
+       values ($1, $2, $3, $4, $5, $6, $7)
        returning ${SHOW_COLUMNS}`,
       [
         input.name.trim(),
@@ -76,6 +101,12 @@ export async function createShow(
         input.holdTtlSeconds ?? null,
         input.seats.length,
         input.ephemeral ?? false,
+        input.layout
+          ? tx.json({
+              aisles_after: [...new Set(input.layout.aisles_after)].sort((a, b) => a - b),
+              row_gaps_after: [...new Set(input.layout.row_gaps_after)],
+            })
+          : null,
       ],
     );
     await tx`

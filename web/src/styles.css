@@ -1,0 +1,107 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/*
+ * FDFS design tokens. The scene: the minute the lights dim in a single-screen hall on release
+ * night. The room is near-black with zero chroma; the mood lives in two lights: the screen's
+ * cold cobalt (primary: actions, selection, "yours") and the exit sign's amber (held, pending,
+ * warnings). Everything else is neutral so live numbers stay legible. All colors in OKLCH.
+ */
+@theme static {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* The room */
+  --color-bg: oklch(0.13 0 0);
+  --color-surface: oklch(0.17 0 0);
+  --color-surface-2: oklch(0.21 0 0);
+  --color-surface-3: oklch(0.25 0 0);
+  --color-line: oklch(0.28 0 0);
+  --color-line-strong: oklch(0.38 0 0);
+
+  /* Text: ink >= 15:1, ink-2 >= 9:1, muted >= 5.5:1 on bg */
+  --color-ink: oklch(0.96 0 0);
+  --color-ink-2: oklch(0.82 0 0);
+  --color-muted: oklch(0.68 0 0);
+
+  /* The screen: cobalt (seed hue 262) */
+  --color-primary: oklch(0.54 0.2 262); /* fills; white text 5:1 */
+  --color-primary-hover: oklch(0.6 0.2 262);
+  --color-primary-ink: oklch(0.76 0.13 262); /* text/links on bg, 8:1 */
+  --color-primary-soft: oklch(0.54 0.2 262 / 0.16);
+
+  /* The exit sign: amber */
+  --color-amber: oklch(0.82 0.14 75);
+  --color-amber-soft: oklch(0.82 0.14 75 / 0.14);
+
+  /* Semantics */
+  --color-success: oklch(0.79 0.14 160);
+  --color-success-soft: oklch(0.79 0.14 160 / 0.14);
+  --color-danger: oklch(0.71 0.17 25);
+  --color-danger-soft: oklch(0.71 0.17 25 / 0.14);
+
+  /* Seats (canvas reads these; shape differs per state too, never color alone) */
+  --color-seat-free: oklch(0.62 0.035 262);
+  --color-seat-held: oklch(0.82 0.14 75);
+  --color-seat-sold: oklch(0.33 0 0);
+  --color-seat-mine: oklch(0.7 0.16 262);
+  --color-seat-focus: oklch(0.96 0 0);
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.4rem;
+  --radius-lg: 0.6rem;
+
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+
+  /* Semantic stacking order */
+  --z-sticky: 10;
+  --z-popover: 20;
+  --z-toast: 30;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    font-feature-settings: "ss01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+    letter-spacing: -0.015em;
+  }
+  ::selection {
+    background: var(--color-primary-soft);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-primary-ink);
+    outline-offset: 2px;
+  }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

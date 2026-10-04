@@ -39,6 +39,14 @@ export type ReserveOutcome =
 
 export type ReserveOutcomeKind = ReserveOutcome["outcome"];
 
+/** Optional hall geometry for the seat map (db/migrations/0005_show_layout.sql). */
+export type ShowLayout = {
+  /** A vertical aisle after these seat numbers within a row. */
+  aisles_after: number[];
+  /** A cross-aisle after these row labels. */
+  row_gaps_after: string[];
+};
+
 export type Show = {
   id: string;
   name: string;
@@ -47,6 +55,7 @@ export type Show = {
   hold_ttl_seconds: number | null;
   total_seats: number;
   ephemeral: boolean;
+  layout: ShowLayout | null;
   created_at: string;
 };
 

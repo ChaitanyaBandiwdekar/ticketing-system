@@ -63,4 +63,15 @@ SNAP="$(grep -m1 -A1 '^event: snapshot$' "$TMP" | sed -n 's/^data: //p')"
 [[ "$(jq -r .status <<<"$SNAP")" == "aaa" ]] || fail "stream snapshot wrong: $SNAP"
 echo "ok  GET /stream -> snapshot"
 
+# The UI: the shell is served (never cached) and the script it references exists (immutable).
+call GET /app/ 200
+grep -q '<div id="root">' "$TMP" || fail "/app/ is not the UI shell: $(head -c 300 "$TMP")"
+JS="$(grep -o '/app/assets/[^"]*\.js' "$TMP" | head -n1)"
+[[ -n "$JS" ]] || fail "the UI shell references no script"
+call GET "$JS" 200
+CC="$(curl -sS -o /dev/null -w '%header{cache-control}' "$BASE$JS")"
+[[ "$CC" == *immutable* ]] || fail "$JS cache-control: $CC"
+call GET /app/shows/new 200
+grep -q '<div id="root">' "$TMP" || fail "client route did not get the UI shell"
+
 echo "smoke: all good"
