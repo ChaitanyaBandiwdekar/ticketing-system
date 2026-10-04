@@ -128,7 +128,7 @@ function sendLifecycleOutcome(request: FastifyRequest, reply: FastifyReply, o: L
 export const reservationRoutes =
   (ctx: AppContext): FastifyPluginAsync =>
   async (app) => {
-    const { sql } = ctx;
+    const { sql, bus, db } = ctx;
     // Identity comes from the token only, resolved before the body is even validated.
     const authenticate = async (request: FastifyRequest) => {
       request.userId = ctx.auth.userFrom(request);
@@ -164,12 +164,9 @@ export const reservationRoutes =
           request.log.warn({ user: userId, claimed_user: claimed }, "identity_spoof_ignored");
         }
 
-        const o = await reserve(sql, {
-          showId,
-          userId,
-          seats: request.body.seats,
-          idempotencyKey: key,
-        });
+        const o = await db(
+          reserve(sql, { showId, userId, seats: request.body.seats, idempotencyKey: key }),
+        );
         request.logCtx = {
           user: userId,
           show: showId,
@@ -178,6 +175,11 @@ export const reservationRoutes =
           path: o.path,
           ...(spoofed && { spoof_ignored: true }),
         };
+        // After commit: the engine call is one autocommitted statement.
+        if (o.outcome === "created") {
+          const r = o.reservation;
+          bus.emit({ showId: r.show_id, labels: r.seats, cause: "reserve" });
+        }
         return sendReserveOutcome(request, reply, o);
       },
     );
@@ -194,13 +196,16 @@ export const reservationRoutes =
         },
         async (request, reply) => {
           const reservationId = request.params.id.toLowerCase();
-          const o = await fn(sql, { reservationId, userId: request.userId });
+          const o = await db(fn(sql, { reservationId, userId: request.userId }));
           request.logCtx = {
             user: request.userId,
             reservation: reservationId,
             outcome: o.outcome,
             ...("changed" in o && { changed: o.changed }),
           };
+          if ((o.outcome === "confirmed" || o.outcome === "cancelled") && o.changed) {
+            bus.emit({ showId: o.reservation.show_id, labels: o.reservation.seats, cause: action });
+          }
           return sendLifecycleOutcome(request, reply, o);
         },
       );
@@ -227,10 +232,12 @@ export const reservationRoutes =
         },
       },
       async (request) => ({
-        reservations: await listReservations(sql, request.userId, {
-          showId: request.query.show_id?.toLowerCase(),
-          limit: request.query.limit,
-        }),
+        reservations: await db(
+          listReservations(sql, request.userId, {
+            showId: request.query.show_id?.toLowerCase(),
+            limit: request.query.limit,
+          }),
+        ),
       }),
     );
   };

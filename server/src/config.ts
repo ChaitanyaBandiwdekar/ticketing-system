@@ -19,6 +19,7 @@ const EnvSchema = z.object({
   DATABASE_URL: postgresUrl,
   DATABASE_URL_SESSION: postgresUrl.optional(),
   DB_POOL_MAX: intWithDefault(20, 1, 200),
+  DB_REQUEST_TIMEOUT_MS: intWithDefault(10_000, 100, 120_000),
 
   JWT_SECRET: z.string().min(32, "must be at least 32 characters"),
   ADMIN_API_KEY: z.string().min(16, "must be at least 16 characters"),
@@ -29,13 +30,24 @@ const EnvSchema = z.object({
   HOLD_SWEEP_INTERVAL_MS: intWithDefault(1_000, 100, 60_000),
   MAX_QUEUE: intWithDefault(20_000, 1, 1_000_000),
   SNAPSHOT_CACHE_MS: intWithDefault(250, 0, 10_000),
+
+  STREAM_MAX_CLIENTS: intWithDefault(2_000, 1, 100_000),
+  STREAM_COALESCE_MS: intWithDefault(100, 1, 5_000),
+  STREAM_HEARTBEAT_MS: intWithDefault(15_000, 100, 120_000),
+  STREAM_RESYNC_MS: intWithDefault(30_000, 1_000, 3_600_000),
+
+  RECONCILE_INTERVAL_MS: intWithDefault(5_000, 100, 3_600_000),
+  JANITOR_INTERVAL_MS: intWithDefault(600_000, 1_000, 86_400_000),
+  EPHEMERAL_SHOW_TTL_HOURS: intWithDefault(24, 1, 24 * 365),
+  IDEMPOTENCY_KEY_TTL_HOURS: intWithDefault(24, 1, 24 * 365),
 });
 
 export type Config = {
   nodeEnv: "development" | "test" | "production";
   port: number;
   logLevel: z.infer<typeof EnvSchema>["LOG_LEVEL"];
-  db: { url: string; migrationUrl: string; poolMax: number };
+  /** requestTimeoutMs: deadline for a request's DB call before it answers 503 (db/deadline.ts). */
+  db: { url: string; migrationUrl: string; poolMax: number; requestTimeoutMs: number };
   auth: { jwtSecret: string; adminApiKey: string; demoLogin: boolean };
   reservations: {
     defaultPerUserLimit: number;
@@ -45,6 +57,15 @@ export type Config = {
   admission: { maxQueue: number };
   /** GET /shows/:id micro-cache: one serialized snapshot per show for this long (0 = off). */
   http: { snapshotCacheMs: number };
+  /** GET /stream (SSE): connection cap, delta coalescing window, heartbeat, full resync period. */
+  realtime: { maxClients: number; coalesceMs: number; heartbeatMs: number; resyncMs: number };
+  /** Background jobs (the sweeper's interval lives under `reservations`). */
+  jobs: {
+    reconcileIntervalMs: number;
+    janitorIntervalMs: number;
+    ephemeralShowTtlHours: number;
+    idempotencyKeyTtlHours: number;
+  };
 };
 
 export class ConfigError extends Error {
@@ -70,6 +91,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       url: e.DATABASE_URL,
       migrationUrl: e.DATABASE_URL_SESSION ?? e.DATABASE_URL,
       poolMax: e.DB_POOL_MAX,
+      requestTimeoutMs: e.DB_REQUEST_TIMEOUT_MS,
     },
     auth: {
       jwtSecret: e.JWT_SECRET,
@@ -83,6 +105,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     admission: { maxQueue: e.MAX_QUEUE },
     http: { snapshotCacheMs: e.SNAPSHOT_CACHE_MS },
+    realtime: {
+      maxClients: e.STREAM_MAX_CLIENTS,
+      coalesceMs: e.STREAM_COALESCE_MS,
+      heartbeatMs: e.STREAM_HEARTBEAT_MS,
+      resyncMs: e.STREAM_RESYNC_MS,
+    },
+    jobs: {
+      reconcileIntervalMs: e.RECONCILE_INTERVAL_MS,
+      janitorIntervalMs: e.JANITOR_INTERVAL_MS,
+      ephemeralShowTtlHours: e.EPHEMERAL_SHOW_TTL_HOURS,
+      idempotencyKeyTtlHours: e.IDEMPOTENCY_KEY_TTL_HOURS,
+    },
   };
 }
 

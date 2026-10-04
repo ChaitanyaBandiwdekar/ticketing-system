@@ -22,7 +22,7 @@ const SNAPSHOT_CACHE_MAX_ENTRIES = 256;
 export const showRoutes =
   (ctx: AppContext): FastifyPluginAsync =>
   async (app) => {
-    const { config, sql } = ctx;
+    const { config, sql, db } = ctx;
 
     app.post<{ Body: CreateShowBody }>(
       "/shows",
@@ -55,17 +55,19 @@ export const showRoutes =
       async (request, reply) => {
         const b = request.body;
         try {
-          const show = await createShow(
-            sql,
-            {
-              name: b.name,
-              seats: b.seats,
-              pricePaise: b.price_paise,
-              perUserLimit: b.per_user_limit ?? config.reservations.defaultPerUserLimit,
-              holdTtlSeconds: b.hold_ttl_seconds ?? null,
-              ephemeral: b.ephemeral ?? false,
-            },
-            { maxSeatsPerShow: config.reservations.maxSeatsPerShow },
+          const show = await db(
+            createShow(
+              sql,
+              {
+                name: b.name,
+                seats: b.seats,
+                pricePaise: b.price_paise,
+                perUserLimit: b.per_user_limit ?? config.reservations.defaultPerUserLimit,
+                holdTtlSeconds: b.hold_ttl_seconds ?? null,
+                ephemeral: b.ephemeral ?? false,
+              },
+              { maxSeatsPerShow: config.reservations.maxSeatsPerShow },
+            ),
           );
           request.logCtx = { show: show.id, seats: show.total_seats };
           const n = show.total_seats;
@@ -104,10 +106,12 @@ export const showRoutes =
         },
       },
       async (request) => ({
-        shows: await listShows(sql, {
-          includeEphemeral: request.query.include_ephemeral ?? false,
-          limit: request.query.limit,
-        }),
+        shows: await db(
+          listShows(sql, {
+            includeEphemeral: request.query.include_ephemeral ?? false,
+            limit: request.query.limit,
+          }),
+        ),
       }),
     );
 
@@ -126,7 +130,7 @@ export const showRoutes =
         if (ttl > 0 && hit && Date.now() - hit.at < ttl) {
           json = hit.json;
         } else {
-          const snap = await getShowSnapshot(sql, id);
+          const snap = await db(getShowSnapshot(sql, id));
           if (!snap) throw showNotFound();
           json = JSON.stringify({ ...snap.show, counts: snap.counts, seats: snap.seats });
           if (ttl > 0) {
@@ -163,7 +167,7 @@ export const showRoutes =
         },
       },
       async (request) => {
-        const report = await audit(sql, request.params.id.toLowerCase());
+        const report = await db(audit(sql, request.params.id.toLowerCase()));
         if (!report) throw showNotFound();
         return report;
       },

@@ -32,6 +32,10 @@ services:
       LISTEN_PORT: "6432"
       MAX_CLIENT_CONN: "500"
       DEFAULT_POOL_SIZE: "20"
+      # Give up on a client's query after 10s without a server connection (default 120s), so
+      # a dead Postgres becomes an error the app maps to 503, not a two-minute hang. The app's
+      # own DB_REQUEST_TIMEOUT_MS deadline is the backstop for poolers configured otherwise.
+      QUERY_WAIT_TIMEOUT: "10"
     depends_on:
       db: { condition: service_healthy }
 

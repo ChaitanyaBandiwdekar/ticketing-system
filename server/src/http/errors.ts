@@ -22,6 +22,7 @@ export type ErrorCode =
   | "payload_too_large"
   | "unsupported_media_type"
   | "overloaded"
+  | "stream_capacity"
   | "contention"
   | "db_unavailable"
   | "shutting_down"
@@ -63,6 +64,8 @@ const CONNECTION_ERROR_CODES = new Set([
   "CONNECTION_CLOSED",
   "CONNECTION_ENDED",
   "CONNECTION_DESTROYED",
+  // db/deadline.ts: no answer within DB_REQUEST_TIMEOUT_MS (e.g. a pooler queueing for a dead DB).
+  "DB_DEADLINE",
 ]);
 
 /**

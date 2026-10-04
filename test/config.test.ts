@@ -15,12 +15,25 @@ describe("loadConfig", () => {
       url: valid.DATABASE_URL,
       migrationUrl: valid.DATABASE_URL,
       poolMax: 20,
+      requestTimeoutMs: 10_000,
     });
     expect(c.auth.demoLogin).toBe(true);
     expect(c.reservations).toEqual({
       defaultPerUserLimit: 4,
       maxSeatsPerShow: 20_000,
       holdSweepIntervalMs: 1_000,
+    });
+    expect(c.realtime).toEqual({
+      maxClients: 2_000,
+      coalesceMs: 100,
+      heartbeatMs: 15_000,
+      resyncMs: 30_000,
+    });
+    expect(c.jobs).toEqual({
+      reconcileIntervalMs: 5_000,
+      janitorIntervalMs: 600_000,
+      ephemeralShowTtlHours: 24,
+      idempotencyKeyTtlHours: 24,
     });
   });
 

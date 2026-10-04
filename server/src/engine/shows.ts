@@ -125,6 +125,61 @@ export async function getShowSnapshot(sql: Sql, showId: string): Promise<ShowSna
   };
 }
 
+/**
+ * Effective states of some of a show's seats plus the whole show's counts, from ONE statement.
+ * The realtime hub's delta read: the changed seats and the counts it ships come from the same
+ * snapshot, so they reconcile. null for an unknown (or deleted) show.
+ */
+export async function getSeatStates(
+  sql: Sql,
+  showId: string,
+  labels: readonly string[],
+): Promise<{ seats: { label: string; status: SeatStatus }[]; counts: SeatCounts } | null> {
+  if (!isUuid(showId)) return null;
+  const [row] = await sql.unsafe<
+    {
+      total_seats: number;
+      seat_list: { label: string; status: SeatStatus }[];
+      seat_rows: number;
+      available: number;
+      held: number;
+      confirmed: number;
+    }[]
+  >(
+    `select sh.total_seats,
+            (select coalesce(jsonb_agg(jsonb_build_object(
+                      'label', s.label,
+                      'status', case when fdfs_seat_free(s.status, s.held_until) then 'available'
+                                     else s.status end)
+                    order by s.id), '[]'::jsonb)
+               from seats s
+              where s.show_id = sh.id and s.label = any($2::text[])) as seat_list,
+            c.seat_rows, c.available, c.held, c.confirmed
+       from shows sh
+       cross join lateral (
+         select count(*)::int as seat_rows,
+                count(*) filter (where fdfs_seat_free(s.status, s.held_until))::int as available,
+                count(*) filter (where s.status = 'held'
+                                   and not fdfs_seat_free(s.status, s.held_until))::int as held,
+                count(*) filter (where s.status = 'confirmed')::int as confirmed
+           from seats s where s.show_id = sh.id) c
+      where sh.id = $1`,
+    [showId, [...labels]],
+  );
+  if (!row) return null;
+  const { total_seats: total, seat_rows, available, held, confirmed } = row;
+  return {
+    seats: row.seat_list,
+    counts: {
+      total,
+      available,
+      held,
+      confirmed,
+      invariant_ok: seat_rows === total && available + held + confirmed === total,
+    },
+  };
+}
+
 export type ShowSummary = Show & { counts: SeatCounts };
 
 /** Newest shows first, each with its effective counts (one statement, one snapshot). */

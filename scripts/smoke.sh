@@ -55,4 +55,12 @@ call GET "/shows/$SHOW" 200
 call GET "/shows/$SHOW/audit" 200
 [[ "$(jq -r .ok "$TMP")" == "true" ]] || fail "audit not ok: $(cat "$TMP")"
 
+# Live seat map: the stream opens with a snapshot (A1 was cancelled above, so all available).
+# curl exits 28 when --max-time ends the never-ending stream; that is the expected way out.
+curl -sSN --max-time 3 "$BASE/stream?show=$SHOW" > "$TMP" 2>/dev/null || [[ $? == 28 ]] || fail "stream failed"
+grep -q '^event: snapshot$' "$TMP" || fail "stream sent no snapshot: $(head -c 300 "$TMP")"
+SNAP="$(grep -m1 -A1 '^event: snapshot$' "$TMP" | sed -n 's/^data: //p')"
+[[ "$(jq -r .status <<<"$SNAP")" == "aaa" ]] || fail "stream snapshot wrong: $SNAP"
+echo "ok  GET /stream -> snapshot"
+
 echo "smoke: all good"

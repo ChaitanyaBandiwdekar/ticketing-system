@@ -19,6 +19,8 @@ export type TestApp = {
   user(name?: string): Promise<{ userId: string; headers: { authorization: string } }>;
   /** Create a show through the API (admin). */
   show(body?: Record<string, unknown>): Promise<{ id: string } & Record<string, unknown>>;
+  /** Starts a real HTTP listener (for streaming tests); returns its base URL. Idempotent. */
+  listen(): Promise<string>;
 };
 
 /**
@@ -73,6 +75,12 @@ export function useTestApp(env: Record<string, string> = {}): TestApp {
     if (res.statusCode !== 201)
       throw new Error(`create show failed: ${res.statusCode} ${res.body}`);
     return res.json();
+  };
+
+  let baseUrl: Promise<string> | null = null;
+  t.listen = () => {
+    baseUrl ??= t.app.listen({ port: 0, host: "127.0.0.1" });
+    return baseUrl;
   };
 
   return t;

@@ -5,9 +5,10 @@
  * which does no I/O, so "listening" must already imply "database reachable and schema current".
  *
  * Shutdown (SIGTERM on deploy/scale-down; Render allows ~30s):
- *   1. /readyz flips to 503 at once; new requests get 503 + Connection: close (Fastify closing)
- *   2. in-flight requests finish, idle keep-alive sockets are closed
- *   3. DB pools drain; exit 0
+ *   1. /readyz flips to 503 at once; background jobs stop (an in-flight tick finishes)
+ *   2. live streams end (clients reconnect elsewhere); new requests get 503 + Connection: close
+ *   3. in-flight requests finish, idle keep-alive sockets are closed
+ *   4. DB pools drain; exit 0
  * A watchdog exits non-zero if draining hangs, so the platform never has to SIGKILL us mid-write.
  */
 import { pino } from "pino";
@@ -18,7 +19,9 @@ import { sqlStateOf } from "./db/retry";
 import { buildApp } from "./http/app";
 import { isDbUnavailable } from "./http/errors";
 import { Readiness } from "./http/readiness";
+import { createJobs } from "./jobs";
 import { loggerOptions } from "./obs/logger";
+import { EventBus } from "./realtime/bus";
 
 const DRAIN_TIMEOUT_MS = 25_000;
 
@@ -50,7 +53,9 @@ async function main(): Promise<void> {
   const sql = createSql(config.db.url, { max: config.db.poolMax, appName: "fdfs-api" });
   const readySql = createSql(config.db.url, { max: 1, appName: "fdfs-ready" });
   const readiness = new Readiness(readySql);
-  const app = await buildApp({ config, sql, readiness });
+  const bus = new EventBus();
+  const app = await buildApp({ config, sql, readiness, bus });
+  const jobs = createJobs({ config, sql, bus, hub: app.realtime.hub, log });
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
@@ -64,6 +69,7 @@ async function main(): Promise<void> {
     }, DRAIN_TIMEOUT_MS);
     watchdog.unref();
     try {
+      await jobs.stop();
       await app.close();
       await Promise.all([sql.end({ timeout: 5 }), readySql.end({ timeout: 1 })]);
       log.info("drained; bye");
@@ -77,6 +83,7 @@ async function main(): Promise<void> {
   process.once("SIGINT", () => void shutdown("SIGINT"));
 
   await app.listen({ port: config.port, host: "0.0.0.0" });
+  jobs.start();
 }
 
 process.on("unhandledRejection", (err) => log.error({ err }, "unhandled rejection"));
