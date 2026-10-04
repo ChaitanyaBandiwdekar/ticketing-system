@@ -71,12 +71,23 @@ Afterwards, check the books:
 
 Every response carries `x-request-id` (send your own to trace a request), and `GET /ops/logs?request_id=<id>` returns that request's log lines.
 
-### Our burst and the Stampede simulator (admin key)
+### Our burst, three ways (admin key)
 
-Both create a fresh show per run so that every expected result is exact, and creating a show needs the admin key:
+Every way runs the same engine: it creates a fresh show per run, so every expected result is exact, and creating a show needs the admin key. Each run checks every guarantee, prints the outcome distribution and the final reconciliation, and posts its report to the War Room. See [The burst](#the-burst) for what it fires and checks.
 
-- `npm run burst -- https://fdfs-dkyx.onrender.com --admin-key <key>` runs 20k checked requests (see [The burst](#the-burst)) and exits non-zero on any 5xx or broken guarantee.
-- `/app/stampede` runs the same engine from your browser and fills a hall live as it goes.
+**1. One file, no clone (Node ≥ 20.19).** `scripts/burst/burst.mjs` is the burst prebuilt into a single 35 KB file that needs nothing but Node:
+
+```bash
+curl -O https://raw.githubusercontent.com/ChaitanyaBandiwdekar/ticketing-system/main/scripts/burst/burst.mjs
+node burst.mjs https://fdfs-dkyx.onrender.com --admin-key <ADMIN_API_KEY>          # 20k requests
+node burst.mjs https://fdfs-dkyx.onrender.com --admin-key <ADMIN_API_KEY> --small  # ~2.6k requests
+```
+
+This works the same in Windows Command Prompt. In Windows PowerShell, type `curl.exe` rather than `curl`. The process exits 0 when every guarantee held and 1 otherwise.
+
+**2. From a clone.** After `npm ci`, run `npm run burst -- https://fdfs-dkyx.onrender.com --admin-key <ADMIN_API_KEY>`. `scripts/burst/burst.sh <URL>` (bash) and `make burst URL=... ADMIN_API_KEY=...` do the same.
+
+**3. From the browser.** `/app/stampede` runs the same engine from the page, with no install, and fills a hall live as it goes. Its **Full · 20k** preset matches the CLI's scale.
 
 ### The admin key
 
@@ -108,6 +119,7 @@ npm test
 | `npm run build`        | Bundle the server to `dist/server.js` (esbuild)                     |
 | `npm start`            | Run the bundle                                                      |
 | `npm run burst -- URL` | The full stampede against a running instance (see below)            |
+| `npm run build:burst`  | Rebuild the one-file burst, `scripts/burst/burst.mjs`               |
 
 Configuration is documented in [`.env.example`](.env.example). Copy it to `.env` for local runs.
 
@@ -151,12 +163,12 @@ The live parts come from one server-sent-events feed (`GET /ops/stream`). Every 
 ## The burst
 
 ```bash
-npm run burst -- http://localhost:8080 --admin-key local-dev-admin-key      # 20k requests, ~2 min at 0.1 CPU
-npm run burst -- https://fdfs-dkyx.onrender.com --admin-key <ADMIN_API_KEY> # the live service
-npm run burst -- <URL> --small                                              # ~2.6k requests
+node scripts/burst/burst.mjs https://fdfs-dkyx.onrender.com --admin-key <ADMIN_API_KEY> # the live service, no install
+npm run burst -- http://localhost:8080 --admin-key local-dev-admin-key                  # 20k requests, ~2 min at 0.1 CPU
+npm run burst -- <URL> --small                                                          # ~2.6k requests
 ```
 
-(`scripts/burst/burst.sh <URL>` and `make burst URL=...` do the same.) It creates an ephemeral show (2,000 seats, limit 4, deleted after 24h), mints tokens, and fires these scenarios interleaved, 256 requests in flight:
+(`scripts/burst/burst.sh <URL>` and `make burst URL=...` do the same as `npm run burst`. `burst.mjs` is the same code, built by `npm run build:burst` from `burst.ts` and `core.ts`; CI fails if the committed file is stale.) It creates an ephemeral show (2,000 seats, limit 4, deleted after 24h), mints tokens, and fires these scenarios interleaved, 256 requests in flight:
 
 | Scenario   | What                                                     | Expected, exactly                              |
 | ---------- | -------------------------------------------------------- | ---------------------------------------------- |
@@ -235,7 +247,7 @@ server/src/     Fastify service (config, db, engine, http, observability, jobs)
 db/migrations/  Forward-only SQL migrations (schema + PL/pgSQL decision functions)
 web/            Vite + React UI (served under /app)
 ops/            Prometheus config, alert rules, Grafana provisioning + dashboard
-scripts/        Smoke and CI checks; burst/ (the burst CLI and the engine the simulator shares)
+scripts/        Smoke and CI checks; burst/ (the burst CLI, its one-file build, and the engine the simulator shares)
 test/           Concurrency, property and API tests (real Postgres)
 docs/           AI usage log and supporting notes
 ```

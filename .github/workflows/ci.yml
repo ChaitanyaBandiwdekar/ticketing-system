@@ -38,6 +38,13 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
+      - name: The prebuilt burst (scripts/burst/burst.mjs) matches its source
+        run: |
+          npm run build:burst
+          git diff --exit-code -- scripts/burst/burst.mjs || {
+            echo "::error::scripts/burst/burst.mjs is stale: run npm run build:burst and commit it"
+            exit 1
+          }
       - run: npm test
 
   compose:

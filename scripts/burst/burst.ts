@@ -1,5 +1,7 @@
+#!/usr/bin/env node
 /**
  * npm run burst -- <BASE_URL> [options]
+ * node scripts/burst/burst.mjs <BASE_URL> [options]   (the same, prebuilt: one file, no install)
  *
  * Fires the full first-day-first-show stampede (scripts/burst/core.ts) at a running FDFS and
  * exits non-zero if any guarantee broke: a 5xx, a request never answered, a server restart, a
@@ -12,7 +14,7 @@ import { writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { DEFAULTS, plannedRequests, runBurst, type BurstOptions, type BurstReport } from "./core";
 
-const HELP = `Usage: npm run burst -- <BASE_URL> [options]
+const HELP = `Usage: node burst.mjs <BASE_URL> [options]    (or, in a clone: npm run burst -- <BASE_URL>)
 
   --admin-key <key>      admin key for POST /shows (default: $ADMIN_API_KEY)
   --requests <n>         stampede requests (default ${DEFAULTS.requests})
