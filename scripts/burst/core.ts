@@ -773,6 +773,9 @@ export async function runBurst(
     }
   })();
 
+  // The server's log position, so the 5xx causes below are only this burst's.
+  const mark = await send("GET", "/ops/logs?limit=1");
+  const logSeq = (mark.body as { lines?: { seq: number }[] } | null)?.lines?.at(-1)?.seq ?? 0;
   const t0 = performance.now();
   const planned = plannedRequests(o);
   const ticker = setInterval(() => {
@@ -844,14 +847,16 @@ export async function runBurst(
   // On any 5xx, ask the server why: its error lines are public (GET /ops/logs, redacted).
   let causes = "";
   if (httpStatus["5xx"] > 0) {
-    const logs = await send("GET", "/ops/logs?level=error&limit=200");
-    const lines = (logs.body as { lines?: { fields?: Record<string, unknown> }[] } | null)?.lines;
+    const logs = await send("GET", `/ops/logs?level=error&after=${logSeq}&limit=200`);
+    type Line = { msg?: string; fields?: Record<string, unknown> };
+    const lines = (logs.body as { lines?: Line[] } | null)?.lines;
     const seen = new Map<string, number>();
     for (const l of lines ?? []) {
       const f = l.fields ?? {};
       const err = f.err as { code?: string; message?: string } | undefined;
       if (!err) continue;
-      const why = `${String(f.code ?? f.status)} ← ${err.code ?? ""} ${err.message ?? ""}`.trim();
+      const what = String(f.code ?? l.msg ?? f.status);
+      const why = `${what} ← ${err.code ?? ""} ${err.message ?? ""}`.trim();
       seen.set(why, (seen.get(why) ?? 0) + 1);
     }
     if (seen.size) causes = `: ${[...seen].map(([why, n]) => `${why} (×${n})`).join("; ")}`;

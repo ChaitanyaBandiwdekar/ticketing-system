@@ -73,10 +73,6 @@ jobs:
           echo "alert rules loaded: $rules"
           test "$rules" -ge 10
           docker compose --profile obs stop prometheus
-      - name: Fail closed when the database disappears, recover when it returns
-        run: scripts/ci/fail-closed.sh http://localhost:8080
-      - name: Smoke again after recovery
-        run: scripts/smoke.sh http://localhost:8080 "$ADMIN_API_KEY"
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -84,6 +80,8 @@ jobs:
       - run: npm ci
       - name: Throttle the app to Render's free tier (0.1 CPU, 512 MB)
         run: docker update --cpus 0.1 --memory 512m --memory-swap 512m "$(docker compose ps -q app)"
+      # Before the outage test: right after Postgres restarts, PgBouncer refuses new server
+      # logins for server_login_retry (15s), and a burst's first wave needs fresh ones.
       - name: Burst (20k) against the throttled app, through PgBouncer
         run: npm run burst -- http://localhost:8080 --admin-key "$ADMIN_API_KEY" --json burst-report.json
       - name: App errors (on failure)
@@ -98,6 +96,10 @@ jobs:
           if-no-files-found: ignore
       - name: Not OOM-killed under the burst
         run: test "$(docker inspect --format '{{.State.OOMKilled}}' "$(docker compose ps -q app)")" = "false"
+      - name: Fail closed when the database disappears, recover when it returns (still throttled)
+        run: scripts/ci/fail-closed.sh http://localhost:8080
+      - name: Smoke again after recovery
+        run: scripts/smoke.sh http://localhost:8080 "$ADMIN_API_KEY"
       - name: Graceful drain on SIGTERM (exit code 0)
         run: |
           docker compose stop -t 30 app

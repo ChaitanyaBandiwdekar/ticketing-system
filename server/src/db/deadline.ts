@@ -27,9 +27,9 @@ export class DbDeadlineError extends Error {
  * starved event loop. The call then keeps waiting, up to a hard cap. A pooler queueing for a
  * dead Postgres answers nothing, so that still fails at the deadline.
  *
- * Found by the CI burst at 0.1 CPU: the first wave hit a cold pool (idle_timeout had closed the
- * connections), 20 connections re-authenticated on a starved CPU, and 5 of 21,555 requests
- * waited past 10s while the database was answering everyone else.
+ * Why: at 0.1 CPU a burst's first wave queues for 15-25s (measured in CI), often against a cold
+ * pool (idle_timeout closes idle connections after 30s), while the database answers everyone
+ * else. "Slow is fine, 5xx is not": the deadline is for a silent database, not a busy one.
  */
 export class DbProgress {
   private last = Number.NEGATIVE_INFINITY;

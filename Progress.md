@@ -567,11 +567,10 @@ The previous session ended after Phase 7's commits; nothing of Phase 8 had been 
 **Found and fixed**
 
 - **Overload turned into 503s.** A 429 retry storm starved the admitted requests, and a due deadline timer ran before the poll that would have delivered their answers. Fixed by the adaptive `Retry-After` and by the deadline deciding after the poll.
-- **Found by CI's throttled burst** (the image behind PgBouncer, after the fail-closed step had dropped the pool):
-  - 5 of 21,555 requests got 503 `db_unavailable` while every other check passed. The first wave hit a cold pool: 20 connections re-authenticated (SCRAM) on a starved CPU, and a few queued calls passed the 10s deadline while the database was answering everyone else. PgBouncer logged no waits.
-  - The deadline now consults `DbProgress` (when the database last answered a request-path call). It keeps waiting while the database answers others, up to 6 deadlines (60s), and still fails at 10s when nothing has answered lately: a dead database behind a pooler.
-  - This matters in production too: `idle_timeout` closes idle connections after 30s, so a stampede after any lull starts from a cold pool.
-  - Tests: a busy database (others answering) lets a slow call finish, a silent one fails at the deadline, and the cap holds.
+- **Found by CI's throttled burst** (the image behind PgBouncer): 5–10 of ~21,560 requests got 503 `db_unavailable`, while every booking guarantee held and the client's same-key retries succeeded.
+  - First hypothesis: the deadline firing on calls queued behind a cold pool on a starved CPU. That led to a real improvement: the deadline now consults `DbProgress` (when the database last answered a request-path call). It keeps waiting while the database answers others, up to 6 deadlines (60s), and still fails at 10s when nothing has answered lately. Tested: busy, silent, cap. But CI still failed, and the hypothesis could not be reproduced locally, even with PgBouncer + SCRAM, a cold pool, 0.05 CPU and a database restart.
+  - So the burst learned to name the server-side cause of any 5xx: it reads `/ops/logs?level=error` for the burst's own window. CI then answered: `08P01 server login has been failing, cached error: server DNS lookup failed (server_login_retry)`. The fail-closed step had just stopped and restarted Postgres, and for `server_login_retry` (15s) after a failed login PgBouncer refuses new server connections. The burst's first wave needed fresh ones about 14s later.
+  - The app's 503 was correct there: the pooler reported a database it had just seen die. The fix is the CI order: the throttled burst now runs on a healthy stack, before the outage test, which then runs throttled.
 - **The image build missed the shared engine:** the simulator imports `scripts/burst/core.ts`, which the Dockerfile didn't copy. Reproduced with the build stage's exact file set and fixed.
 - **The 2,000-connection accept-queue overflow** (listen backlog).
 - **The young-generation squeeze** from the heap cap.
