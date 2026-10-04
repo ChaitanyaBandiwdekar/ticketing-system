@@ -13,6 +13,7 @@ import { Pill, Segmented, cx } from "../components/ui";
 import { get } from "../lib/api";
 import { ago, num } from "../lib/format";
 import { useShows } from "../lib/queries";
+import { OUTCOMES } from "../warroom/outcomes";
 import {
   ChartCredit,
   ChartTable,
@@ -31,64 +32,6 @@ import {
 
 // ---------------------------------------------------------------------------------------------
 // Series
-
-/** Reserve outcomes in a fixed order: color follows the outcome, never its rank. */
-const OUTCOMES: (Series & { match: (o: string) => boolean })[] = [
-  {
-    key: "created",
-    label: "Booked",
-    color: "var(--color-series-1)",
-    match: (o) => o === "created",
-  },
-  {
-    key: "seat_taken",
-    label: "Seat taken",
-    color: "var(--color-series-2)",
-    match: (o) => o === "seat_taken",
-  },
-  {
-    key: "per_user_limit",
-    label: "Over limit",
-    color: "var(--color-series-3)",
-    match: (o) => o === "per_user_limit",
-  },
-  {
-    key: "replayed",
-    label: "Replayed",
-    color: "var(--color-series-4)",
-    match: (o) => o === "replayed",
-  },
-  {
-    key: "idempotency_key_reused",
-    label: "Key reused",
-    color: "var(--color-series-5)",
-    match: (o) => o === "idempotency_key_reused",
-  },
-  {
-    key: "other",
-    label: "Other 4xx",
-    color: "var(--color-series-6)",
-    match: (o) => !isFailure(o) && !KNOWN.has(o),
-  },
-  { key: "failed", label: "429 / 5xx", color: "var(--color-series-7)", match: isFailure },
-];
-const KNOWN = new Set([
-  "created",
-  "seat_taken",
-  "per_user_limit",
-  "replayed",
-  "idempotency_key_reused",
-]);
-const FAILURES = new Set([
-  "overloaded",
-  "contention",
-  "db_unavailable",
-  "internal",
-  "shutting_down",
-]);
-function isFailure(o: string): boolean {
-  return FAILURES.has(o) || /^http_(5\d\d|429)$/.test(o);
-}
 
 const LATENCY: Series[] = [
   { key: "p50", label: "p50", color: "var(--color-ramp-3)" },

@@ -10,6 +10,7 @@ import { LoginPage } from "../pages/LoginPage";
 import { NewShowPage } from "../pages/NewShowPage";
 import { ShowPage } from "../pages/ShowPage";
 import { ShowsPage } from "../pages/ShowsPage";
+import { StampedePage } from "../pages/StampedePage";
 
 // The War Room carries the charting library; only its visitors download it.
 const WarRoomPage = lazy(() =>
@@ -61,6 +62,7 @@ export function App() {
                   </Suspense>
                 }
               />
+              <Route path="stampede" element={<StampedePage />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </AppShell>
