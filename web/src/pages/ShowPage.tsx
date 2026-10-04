@@ -12,7 +12,7 @@ import {
 import { Link, useLocation, useParams } from "react-router";
 import { BookingCard } from "../components/Bookings";
 import { InvariantBadge, Occupancy } from "../components/Occupancy";
-import { Button, buttonClass, cx, Notice, Pill, RequestId, Skeleton } from "../components/ui";
+import { Button, buttonClass, cx, Notice, RequestId, Skeleton } from "../components/ui";
 import { seatRect, type HallMetrics, type HallPaint } from "../hall/draw";
 import { HallCanvas, HallLegend, Screen, type HallInteraction } from "../hall/HallCanvas";
 import { hallGeometry, neighbor, type Direction, type HallGeometry } from "../hall/geometry";
@@ -134,7 +134,6 @@ function ShowHeader({
         <div className="flex min-w-0 flex-col gap-1.5">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <h1 className="text-2xl font-semibold">{show.name}</h1>
-            {show.ephemeral && <Pill tone="amber">Burst</Pill>}
             <LiveBadge link={link} />
           </div>
           <p className="tabular flex flex-wrap gap-x-2 text-[0.8125rem] text-muted">

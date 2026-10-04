@@ -29,7 +29,7 @@ export function BookingsPage() {
   const qc = useQueryClient();
   const { session } = useSession();
   const mine = useMyReservations(session);
-  const shows = useShows(true);
+  const shows = useShows();
   const groups = useMemo(
     () => groupByShow(mine.data ?? [], shows.data ?? []),
     [mine.data, shows.data],

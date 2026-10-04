@@ -1,7 +1,6 @@
-import { useState } from "react";
 import { Link } from "react-router";
 import { InvariantBadge, Occupancy } from "../components/Occupancy";
-import { buttonClass, Notice, Pill, RequestId, Skeleton, Switch } from "../components/ui";
+import { buttonClass, Notice, Pill, RequestId, Skeleton } from "../components/ui";
 import { ApiError, describeError, type ShowSummary } from "../lib/api";
 import { ago, holdMode, plural, rupees } from "../lib/format";
 import { useShows } from "../lib/queries";
@@ -19,11 +18,6 @@ function ShowRow({ show }: { show: ShowSummary }) {
             {show.name}
           </Link>
           {soldOut && <Pill tone="neutral">Sold out</Pill>}
-          {show.ephemeral && (
-            <Pill tone="amber" title="Created by a burst or the simulator; deleted after 24 hours">
-              Burst
-            </Pill>
-          )}
         </div>
         <p className="tabular flex flex-wrap gap-x-2 text-[0.8125rem] text-muted">
           <span className="text-ink-2">{rupees(show.price_paise)}</span>
@@ -67,8 +61,7 @@ function LoadingRows() {
 }
 
 export function ShowsPage() {
-  const [includeBurst, setIncludeBurst] = useState(false);
-  const shows = useShows(includeBurst);
+  const shows = useShows();
 
   return (
     <div className="flex flex-col gap-6">
@@ -85,19 +78,11 @@ export function ShowsPage() {
         </Link>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Switch
-          checked={includeBurst}
-          onChange={setIncludeBurst}
-          label="Include burst shows"
-          hint="Shows created by load tests and the simulator"
-        />
-        {shows.data && (
-          <p className="tabular text-[0.8125rem] text-muted" aria-live="polite">
-            {plural(shows.data.length, "show")} · refreshed every 5s
-          </p>
-        )}
-      </div>
+      {shows.data && (
+        <p className="tabular text-[0.8125rem] text-muted" aria-live="polite">
+          {plural(shows.data.length, "show")} · refreshed every 5s
+        </p>
+      )}
 
       <section aria-label="Show list" className="overflow-hidden rounded-lg border border-line">
         {shows.isPending ? (
@@ -122,7 +107,6 @@ export function ShowsPage() {
             <p className="max-w-prose text-ink-2">
               Create a show to get a hall: pick rows, seats per row and aisles, set a price, then
               choose whether reserving confirms instantly or places a timed hold.
-              {!includeBurst && " Shows made by burst runs are hidden; switch them on above."}
             </p>
             <Link to="/shows/new" className={buttonClass("secondary", "sm")}>
               Create the first show

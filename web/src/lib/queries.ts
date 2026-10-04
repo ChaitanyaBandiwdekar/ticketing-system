@@ -12,7 +12,7 @@ import type { BurstRun } from "../../../server/src/obs/types";
 import { withRetries } from "./booking";
 
 export const keys = {
-  shows: (includeEphemeral: boolean) => ["shows", { includeEphemeral }] as const,
+  shows: ["shows"] as const,
   show: (id: string) => ["show", id] as const,
   /** Every "my reservations" list (per show and all shows) shares this prefix. */
   mine: ["me", "reservations"] as const,
@@ -33,14 +33,14 @@ export function useBurstRuns() {
   });
 }
 
-export function useShows(includeEphemeral: boolean) {
+/** Every show, simulator runs included: they are shows like any other. */
+export function useShows() {
   return useQuery({
-    queryKey: keys.shows(includeEphemeral),
+    queryKey: keys.shows,
     queryFn: ({ signal }) =>
-      get<{ shows: ShowSummary[] }>(
-        `/shows?limit=100${includeEphemeral ? "&include_ephemeral=true" : ""}`,
-        { signal },
-      ).then((r) => r.shows),
+      get<{ shows: ShowSummary[] }>("/shows?limit=100&include_ephemeral=true", { signal }).then(
+        (r) => r.shows,
+      ),
     // The list's counts move during a burst; a light poll keeps them honest.
     refetchInterval: 5_000,
   });

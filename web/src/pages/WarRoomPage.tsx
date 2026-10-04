@@ -801,7 +801,7 @@ function LogTail({
 export function WarRoomPage() {
   const { link, summary, points, logs, logsSkipped } = useOpsFeed();
   const runs = useBurstRuns();
-  const shows = useShows(true);
+  const shows = useShows();
   const names = useMemo(() => new Map((shows.data ?? []).map((s) => [s.id, s.name])), [shows.data]);
   const liveShows = useMemo(() => new Set(names.keys()), [names]);
   const [windowKey, setWindowKey] = useState<WindowKey>("10");
