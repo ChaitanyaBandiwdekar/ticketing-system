@@ -35,6 +35,8 @@ A reservation is decided by one PL/pgSQL function, `fdfs_reserve()`, called as a
 3. **Per-(show, user) advisory lock,** then an exact count of the user's active seats against the limit.
 4. **Lock the seats,** sorted by id, `FOR UPDATE`. Re-check them all, insert the reservation, update the seats.
 
+**Why it is race-free.** Step 1 only declines; it never books. A seat changes hands only in step 4, after this transaction holds the seat's row lock and has re-read the seat under that lock. Two buyers of A12 serialize on that lock. The second one re-reads A12 after the first commits, sees it taken, and declines. The per-user count in step 3 is serialized the same way by the advisory lock, so two parallel requests from one user can't both pass the limit. Everything from the key claim to the seat update is one transaction: either all of it commits, or none of it does.
+
 **Multi-seat requests are all or nothing.** If any requested seat is taken, nothing is booked and the 409 `seat_taken` lists the taken seats in `unavailable_seats`. Under concurrency this holds because steps 1 and 4 check the whole set, and step 4 holds every seat's lock while it writes them. A buyer asking for a pair wants the pair; the UI then offers to book just the seats that are still free.
 
 **Deadlock freedom comes from one global lock order:** idempotency key → per-user advisory lock → seats by id → reservation rows. Every writer follows it: reserve, confirm, cancel, the sweeper, and the janitor. Two details make the order hold:
@@ -50,6 +52,8 @@ The crossed-pairs tests (`[X,Y]` against `[Y,X]`, hundreds at once) run with zer
 
 ## Idempotency
 
+- **Where the key lives:** Postgres, in `idempotency_keys`, with primary key `(user_id, key)`. Each row holds the request fingerprint (`request_hash`) and the `reservation_id` it booked. There is no cache or second store.
+- **How exactly-once is enforced:** the key row is inserted in the same transaction as the reservation it names (step 2 above), so both commit or neither does. The primary key makes a second claim of the same key impossible. A concurrent duplicate blocks on that unique index until the first transaction ends. It then reads the committed row and replays it. If the first transaction declined, it deleted the key, so the duplicate is evaluated as a new request.
 - Keys are scoped per user: `(user_id, key)`. One user's key can't replay another's booking.
 - The request fingerprint is a sha256 of the show and the sorted seat set. The same key with different seats is a 409 `idempotency_key_reused`, as the spec asks (the IETF Idempotency-Key draft would use 422).
 - A replay returns the original response: 201 and the original reservation, with its _current_ status. `Idempotent-Replayed: true` tells a client that nothing new was booked.
@@ -170,6 +174,12 @@ Claude Code wrote most of the code. The human directed the work and made the dec
   - the retry storm;
   - the deadline race;
   - PgBouncer's login backoff.
+
+**The last live run, as an example of how the split worked:**
+
+- The human ran the browser Stampede against Render and got five failed checks while the server's own audit was clean.
+- The AI traced all five to the network between the browser and Render, not to the server. Six bookings had reached the server twice through one `fetch()`. The first copy booked, its answer was lost, and the burst saw only the replay. It also found 168 dropped connections. It fixed the checker, not the server, with tests that replay each case through a lossy `fetch`.
+- The AI first recommended keeping "no network errors" as a hard failure. The human pushed back when it was the only check still failing. The AI then agreed it was too strict: some of the requests failed after 5 ms, before they could have reached the server, and every one was retried with the same key and answered. It was replaced by two checks that test what it was there for: every request is eventually answered, and the server didn't restart mid-run.
 
 **Where AI output was not taken on trust:**
 
