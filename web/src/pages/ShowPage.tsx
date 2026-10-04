@@ -34,6 +34,12 @@ import { keys, rememberReservation, useMyReservations, useShow } from "../lib/qu
 import { useSession } from "../lib/session";
 
 const RESERVE_ATTEMPTS = 4;
+/**
+ * Touch needs a 14px seat pitch to be tappable; a mouse is precise at 10px, which fits the
+ * 2,000-seat Premiere in the desktop panel instead of hiding its right block behind a scrollbar.
+ */
+const COARSE_POINTER =
+  typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
 
 function ttlText(seconds: number): string {
   return seconds % 60 === 0 ? plural(seconds / 60, "minute") : plural(seconds, "second");
@@ -458,7 +464,7 @@ function LiveHall({
         <HallCanvas
           geometry={geometry}
           paint={paint}
-          minPitch={14}
+          minPitch={COARSE_POINTER ? 14 : 10}
           label={`Seat map: ${counts.available} of ${counts.total} seats available`}
           className="overflow-x-auto"
           onMetrics={setMetrics}

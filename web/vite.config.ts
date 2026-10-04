@@ -29,6 +29,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: Object.fromEntries(API_PATHS.map((p) => [p, { target: API }])),
+    // changeOrigin: a hosted API (FDFS_API=https://...) routes by Host header.
+    proxy: Object.fromEntries(API_PATHS.map((p) => [p, { target: API, changeOrigin: true }])),
   },
 });
