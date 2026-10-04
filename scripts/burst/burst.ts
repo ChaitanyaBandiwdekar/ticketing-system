@@ -94,7 +94,7 @@ opts.metrics = !values["no-metrics"];
 
 const tty = process.stdout.isTTY;
 const c = (code: number) => (s: string) => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
-const [green, red, dim, bold] = [c(32), c(31), c(2), c(1)];
+const [green, red, yellow, dim, bold] = [c(32), c(31), c(33), c(2), c(1)];
 const n = (v: number) => v.toLocaleString("en");
 const ms = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(2)}s` : `${Math.round(v)}ms`);
 const row = (cells: string[], widths: number[]) =>
@@ -121,6 +121,9 @@ function print(r: BurstReport) {
         [24, 8, 7],
       ),
   );
+  if (r.resent) {
+    out.push("  " + row(["re-sent in transit", n(r.resent), ""], [24, 8, 7]));
+  }
 
   out.push("", bold("By scenario") + dim(" (final outcome per request)"));
   for (const [s, rec] of Object.entries(r.scenarios)) {
@@ -151,8 +154,15 @@ function print(r: BurstReport) {
 
   if (r.metrics) {
     out.push("", bold("/metrics vs observed") + dim(" (fdfs_reserve_responses_total delta)"));
+    // ≈: the server sent more than arrived, within what was lost in transit (see the check).
+    const within = r.checks.find((ch) => ch.name === "metrics match observations")?.ok;
     for (const m of r.metrics) {
-      const mark = m.observed === m.delta ? green("=") : red("≠");
+      const mark =
+        m.observed === m.delta
+          ? green("=")
+          : within && m.delta > m.observed
+            ? yellow("≈")
+            : red("≠");
       out.push("  " + row([m.outcome, n(m.observed), mark, n(m.delta)], [24, 8, 1, 8]));
     }
   }
