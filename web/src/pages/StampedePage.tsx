@@ -540,7 +540,8 @@ function ReportSummary({ report }: { report: BurstReport }) {
         <OutcomeBar outcomes={report.outcomes} />
         <p className="text-xs text-muted">
           {num(report.status["429"])} shed with 429 and retried · {num(report.status["5xx"])} 5xx ·{" "}
-          {num(report.status.network)} network errors
+          {num(report.status.network)} dropped connections, retried
+          {report.unanswered > 0 && ` · ${num(report.unanswered)} never answered`}
           {report.resent > 0 && ` · ${num(report.resent)} re-sent in transit, booked once`}
         </p>
       </div>

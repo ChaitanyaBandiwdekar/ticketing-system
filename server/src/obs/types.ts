@@ -78,6 +78,10 @@ export type RunReport = {
   scenarios: Record<string, Record<string, number>>;
   status: { "2xx": number; "4xx": number; "429": number; "5xx": number; network: number };
   retries: number;
+  /** Reserves and cancels still unanswered after every retry (absent on older runs). */
+  unanswered?: number;
+  /** Requests re-sent in transit: booked once, answered with the replay (absent on older runs). */
+  resent?: number;
   reserveRequests: number;
   /** Reserve requests per second over the run. */
   throughput: number;

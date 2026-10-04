@@ -62,6 +62,9 @@ const reportSchema = {
       properties: { "2xx": count, "4xx": count, "429": count, "5xx": count, network: count },
     },
     retries: count,
+    // Absent on runs recorded before the burst told dropped connections from unanswered ones.
+    unanswered: count,
+    resent: count,
     reserveRequests: count,
     throughput: ms,
     latency: {
