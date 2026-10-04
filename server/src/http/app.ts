@@ -152,7 +152,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   metrics.bind({
     admission: () => admission.stats(),
     streams: () => hub.stats(),
-    ready: () => deps.readiness.peek(),
+    ready: async () => (await deps.readiness.check()).ready,
   });
   ops.bind({ streams: () => hub.stats(), ready: () => deps.readiness.peek() });
   // Streams never finish on their own: end them first, or close() would wait for them forever.

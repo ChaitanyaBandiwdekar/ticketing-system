@@ -27,7 +27,8 @@ export type MetricSources = {
     lastSuccessAt: number | null;
     consecutiveFailures: number;
   }>;
-  ready?: () => boolean | null;
+  /** The readiness verdict (the same 1s-cached, single-flight probe as GET /readyz). */
+  ready?: () => Promise<boolean>;
 };
 
 export type ReserveState = "confirmed" | "held";
@@ -235,11 +236,13 @@ export class Metrics {
     });
     new Gauge({
       name: "fdfs_ready",
-      help: "1 when the last readiness probe passed, 0 when it failed (or the instance is draining)",
+      help: "1 when the readiness probe passes, 0 when the DB is unreachable or the instance drains",
       registers,
-      collect() {
-        const ready = live.sources().ready?.();
-        if (ready !== null && ready !== undefined) this.set(ready ? 1 : 0);
+      // Probes at scrape time (cached 1s, so at most one `select 1` a second): an unprobed
+      // gauge would export 0 and page "not ready" on a healthy instance.
+      async collect() {
+        const ready = live.sources().ready;
+        if (ready) this.set((await ready()) ? 1 : 0);
       },
     });
     new Gauge({

@@ -488,6 +488,7 @@ You created the Supabase project (Singapore) and deployed the `render.yaml` blue
 - The first `tick` after `hello` could repeat log lines; duplicate React keys then left stale rows of another request in the filtered view. The client now appends only newer `seq`s.
 - Event-loop lag included the monitor's 20ms sampling interval (an idle loop read ~20ms); it is now subtracted.
 - Tile captions truncated at six columns; the pool-size label sat on top of the live data; the latency labels vanished whenever the last second had no reserves; x-axis labels collided on phones.
+- **Found on the live deploy:** `fdfs_ready` read 0 on a healthy instance. Nothing had probed readiness yet (Render's health check is `/healthz`), and an unset gauge exports 0, so `FDFSNotReady` would have paged falsely. The gauge now runs the same 1s-cached probe as `/readyz` at scrape time, and a test asserts it reads 1.
 - Local tooling: `.pg/serve.sh` now pins `DATABASE_URL_SESSION` too. With real Supabase URLs in `.env`, migrations otherwise went to Supabase (a no-op there) while the app used the empty local DB.
 
 **Deviations from plan**

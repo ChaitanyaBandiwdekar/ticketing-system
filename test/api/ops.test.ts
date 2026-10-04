@@ -81,6 +81,8 @@ describe("metrics and ops", () => {
     ]) {
       expect(res.body, name).toContain(`# TYPE ${name} `);
     }
+    // Probed at scrape time: a healthy instance reads 1 even if nobody called /readyz.
+    expect(res.body).toMatch(/^fdfs_ready 1$/m);
   });
 
   it("labels HTTP metrics by route template, never by raw URL", async () => {
