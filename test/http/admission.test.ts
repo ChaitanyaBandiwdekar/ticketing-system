@@ -28,6 +28,34 @@ describe("Admission", () => {
   });
 });
 
+describe("Retry-After", () => {
+  it("is the time to drain what is in flight at the recent completion rate, 1–30s", () => {
+    let now = 1_000_000_000;
+    const admission = new Admission(10_000, () => now);
+    // No completions yet: the drain rate is unknown, so the longest wait.
+    const slots = Array.from({ length: 1_000 }, () => admission.tryEnter()!);
+    expect(admission.retryAfterSeconds()).toBe(30);
+
+    // 100 completions in each of the last 5 seconds: 100/s.
+    for (let s = 0; s < 5; s++) {
+      for (const release of slots.splice(0, 100)) release();
+      now += 1_000;
+    }
+    // 500 still in flight at 100/s: 5s.
+    expect(admission.stats().inFlight).toBe(500);
+    expect(admission.retryAfterSeconds()).toBe(5);
+
+    // Nearly drained: never below 1s.
+    for (const release of slots.splice(0, 499)) release();
+    now += 1_000;
+    expect(admission.retryAfterSeconds()).toBe(1);
+
+    // A long quiet spell forgets the old rate.
+    now += 60_000;
+    expect(admission.retryAfterSeconds()).toBe(30);
+  });
+});
+
 describe("admission control in the app (MAX_QUEUE=1)", () => {
   const t = useTestApp({ MAX_QUEUE: "1" });
 

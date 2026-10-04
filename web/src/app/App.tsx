@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes } from "react-router";
 import { AppShell } from "../components/AppShell";
 import { buttonClass } from "../components/ui";
@@ -9,7 +10,12 @@ import { LoginPage } from "../pages/LoginPage";
 import { NewShowPage } from "../pages/NewShowPage";
 import { ShowPage } from "../pages/ShowPage";
 import { ShowsPage } from "../pages/ShowsPage";
-import { WarRoomPage } from "../pages/WarRoomPage";
+import { StampedePage } from "../pages/StampedePage";
+
+// The War Room carries the charting library; only its visitors download it.
+const WarRoomPage = lazy(() =>
+  import("../pages/WarRoomPage").then((m) => ({ default: m.WarRoomPage })),
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,7 +54,15 @@ export function App() {
               <Route path="shows/new" element={<NewShowPage />} />
               <Route path="shows/:id" element={<ShowPage />} />
               <Route path="bookings" element={<BookingsPage />} />
-              <Route path="war-room" element={<WarRoomPage />} />
+              <Route
+                path="war-room"
+                element={
+                  <Suspense fallback={<p className="pt-10 text-muted">Opening the War Room…</p>}>
+                    <WarRoomPage />
+                  </Suspense>
+                }
+              />
+              <Route path="stampede" element={<StampedePage />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </AppShell>

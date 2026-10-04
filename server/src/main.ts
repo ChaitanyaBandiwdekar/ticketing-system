@@ -23,6 +23,7 @@ import { LogBuffer } from "./obs/logbuffer";
 import { createLogger } from "./obs/logger";
 import { EventBus } from "./realtime/bus";
 
+const LISTEN_BACKLOG = 4096;
 const DRAIN_TIMEOUT_MS = 25_000;
 
 loadDotEnv();
@@ -84,7 +85,10 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
   process.once("SIGINT", () => void shutdown("SIGINT"));
 
-  await app.listen({ port: config.port, host: "0.0.0.0" });
+  // Node's default accept backlog is 511. A stampede opens thousands of connections at once;
+  // past the backlog the kernel drops them and resets each ~15s later (found by the burst at
+  // 2,000 in flight: ECONNRESET, ListenOverflows). The kernel caps this at net.core.somaxconn.
+  await app.listen({ port: config.port, host: "0.0.0.0", backlog: LISTEN_BACKLOG });
   jobs.start();
 }
 

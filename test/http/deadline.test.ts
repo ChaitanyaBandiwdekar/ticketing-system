@@ -1,7 +1,12 @@
-import { createServer, type Server, type Socket } from "node:net";
+import { connect, createServer, type Server, type Socket } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../../server/src/config";
-import { DbDeadlineError, withDeadline } from "../../server/src/db/deadline";
+import {
+  DEADLINE_CAP_FACTOR,
+  DbDeadlineError,
+  DbProgress,
+  withDeadline,
+} from "../../server/src/db/deadline";
 import { createSql } from "../../server/src/db/pool";
 import { buildApp } from "../../server/src/http/app";
 import { toApiError } from "../../server/src/http/errors";
@@ -23,6 +28,75 @@ describe("withDeadline", () => {
     expect(api.statusCode).toBe(503);
     expect(api.code).toBe("db_unavailable");
     expect(api.headers["retry-after"]).toBe("2");
+  });
+
+  it("never times out an answer that arrived while the event loop was blocked", async () => {
+    // The peer writes its reply, then this process stays busy past the deadline (a saturated
+    // loop at 0.1 CPU): the answer sits in the socket while the timer comes due. Due timers run
+    // before I/O is polled, so a naive deadline would win this race and report a 503.
+    const echo = createServer((s) => {
+      s.on("error", () => {});
+      s.on("data", (d) => {
+        s.write(d);
+        const until = Date.now() + 120;
+        while (Date.now() < until);
+      });
+    });
+    await new Promise<void>((r) => echo.listen(0, "127.0.0.1", r));
+    const { port } = echo.address() as { port: number };
+    const client = await new Promise<Socket>((resolve) => {
+      const c: Socket = connect(port, "127.0.0.1", () => resolve(c));
+    });
+    client.on("error", () => {});
+    try {
+      const reply = new Promise<string>((resolve) =>
+        client.once("data", (d) => resolve(String(d))),
+      );
+      const answered = withDeadline(reply, 20);
+      client.write("pong");
+      await expect(answered).resolves.toBe("pong");
+    } finally {
+      client.destroy();
+      await new Promise((r) => echo.close(r));
+    }
+  });
+
+  it("keeps waiting while the database answers other calls (busy, not gone)", async () => {
+    const progress = new DbProgress();
+    const others = setInterval(() => progress.mark(), 5);
+    try {
+      const slow = new Promise<string>((r) => setTimeout(() => r("answered"), 70));
+      const t0 = performance.now();
+      await expect(withDeadline(slow, 20, progress)).resolves.toBe("answered");
+      expect(performance.now() - t0).toBeGreaterThanOrEqual(60);
+    } finally {
+      clearInterval(others);
+    }
+  });
+
+  it("still fails at the deadline when the database has answered nothing lately", async () => {
+    const progress = new DbProgress();
+    progress.mark(); // an answer long before this call...
+    await new Promise((r) => setTimeout(r, 40)); // ...then silence
+    const t0 = performance.now();
+    const err = await withDeadline(new Promise<never>(() => {}), 20, progress).catch((e) => e);
+    expect(err).toBeInstanceOf(DbDeadlineError);
+    expect(performance.now() - t0).toBeLessThan(20 * 3);
+  });
+
+  it("gives up at the cap even while the database answers others", async () => {
+    const progress = new DbProgress();
+    const others = setInterval(() => progress.mark(), 5);
+    try {
+      const t0 = performance.now();
+      const err = await withDeadline(new Promise<never>(() => {}), 10, progress).catch((e) => e);
+      expect(err).toBeInstanceOf(DbDeadlineError);
+      const waited = performance.now() - t0;
+      expect(waited).toBeGreaterThanOrEqual(10 * DEADLINE_CAP_FACTOR - 5);
+      expect(waited).toBeLessThan(10 * DEADLINE_CAP_FACTOR + 100);
+    } finally {
+      clearInterval(others);
+    }
   });
 
   it("never leaves the abandoned work as an unhandled rejection", async () => {

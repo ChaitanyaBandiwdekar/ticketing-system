@@ -13,7 +13,7 @@ Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its check
 | 5     | UI I: shell + shows                     | ✅ done        |
 | 6     | UI II: live hall                        | ✅ done        |
 | 7     | Observability + War Room                | ✅ done        |
-| 8     | Burst CLI + Stampede simulator + tuning | ⬜ not started |
+| 8     | Burst CLI + Stampede simulator + tuning | ✅ done        |
 | 9     | Final deploy + docs                     | ⬜ not started |
 
 ---
@@ -504,3 +504,91 @@ You created the Supabase project (Singapore) and deployed the `render.yaml` blue
 - Supabase's free tier pauses after 7 idle days. The keepalive cron is in the Phase 9 plan; until then, any visit to the live URL keeps it awake.
 
 **Commits:** see `git log`. Phase 7 is a feature commit and a docs commit.
+
+---
+
+## Phase 7 follow-up: War Room charts on TradingView Lightweight Charts ✅
+
+You asked for the charts to use [Lightweight Charts](https://www.tradingview.com/lightweight-charts/).
+
+- `TimeChart` keeps its props and renders with `lightweight-charts` 5.2:
+  - outcomes are stacked areas, drawn top of the stack first so each lower layer paints over it;
+  - latency lines label their latest value on the price axis;
+  - the pool size is a price line;
+  - the y axis starts at zero with a floor (`minMax`) and room over the reference line.
+- `warroom/chartData.ts` gives the window one slot per second. A missing second is whitespace, so lines break across gaps; the library spaces bars by index, so this also keeps x proportional to time.
+- Canvas colors are resolved from the theme tokens (OKLCH) by painting one pixel.
+- The window is live, so scroll and zoom are off (page scrolling passes through on phones). The crosshair tooltip, arrow-key stepping and the table twins are unchanged.
+- The War Room route is lazy-loaded: the main bundle stays at 366 kB, and the chart library ships only in the War Room chunk (191 kB, 62 kB gzipped).
+- Attribution (Apache-2.0): the NOTICE text sits in `TimeChart.tsx`, and the page carries one "Charts by TradingView Lightweight Charts™" link instead of a logo inside each of the five plots, where it covered data.
+
+**Verification:** typecheck, lint, format, `npm test` (+8 tests for the slot builder and the y-axis top). Visual check in Chromium under load at 1280×900 and 375×812: no console errors, no horizontal scroll, hover tooltips and keyboard stepping work.
+
+---
+
+## Phase 8: Burst CLI + Stampede simulator + tuning ✅
+
+The previous session ended after Phase 7's commits; nothing of Phase 8 had been started, so it began fresh.
+
+**Deliverables**
+
+- [x] `scripts/burst/core.ts`: the burst engine, shared by the CLI and the simulator. It uses only fetch, `crypto.randomUUID` and `performance.now`, and never prints.
+  - Creates an ephemeral show (2,000 seats, limit 4, confirm mode, so every expectation is exact) and batch-mints tokens.
+  - Fires the scenarios interleaved through one bounded pool (256 in flight by default): hot-seat storm (500 users on A12 + 5), Zipf stampede (20k requests, 5k users, 20% pairs), same-key copies (100 × 5), key reuse (50), one user over the limit (20 × 10 parallel), crossed pairs (50), spoofed `user_id` (50), foreign cancel (50).
+  - Every scenario except the stampede and the storm gets its own seats and users, so its outcome is exact.
+  - 429, 503 and network errors are retried with the same key, honoring `Retry-After`. A replay after a failed attempt counts as that attempt's booking.
+  - Polls `GET /shows/:id` during the run: every snapshot must balance, and sold seats never decrease.
+  - Afterwards it checks: the final map equals every grant; no seat in two reservations; nobody over the limit; the audit; each scenario's exact result; `fdfs_reserve_responses_total` deltas equal the observed outcomes.
+  - Every request carries `x-request-id`; the five slowest are reported, for the War Room's log tail.
+- [x] `scripts/burst/burst.ts` (`npm run burst -- <URL>`): flags for size, concurrency, `--small`, `--no-metrics`, `--json`; progress every 2s; the report; **exit 1 on any violation**. Also `scripts/burst/burst.sh` and a `Makefile` (`make burst URL=...`).
+- [x] **Stampede simulator** (`/app/stampede`, nav "Stampede" / "Sim"): crowd, requests, hot-seat storm, same-key and spoof shares, over-limit users, edge cases and concurrency as settings. It shows the live hall filling over the seat-map stream, progress with outcome counts, then the verdict, the outcome bar and every check. The outcome palette moved to `warroom/outcomes.ts` so both pages color outcomes alike.
+- [x] Tuning, all measured with the server in a 0.1 CPU / 512 MB cgroup (the free tier's ~90 req/s reproduced) and Postgres unthrottled, as on Render + Supabase:
+  - `--max-semi-space-size=16` (Dockerfile): CPU per reserve ≈620 → ≈400 µs, from cgroup `cpuacct` over 3 × 2,500 requests per variant, repeated. Capping the heap at 384 MB had shrunk V8's young generation. 64 MB was no better and cost ~55 MB of RSS.
+  - Listen backlog 4096: at 2,000 in flight the default 511 overflowed (`ListenOverflows` 34k), and the kernel reset connections ~15s later (16 `ECONNRESET`). After the fix: 0.
+  - `MAX_QUEUE` 20,000 → 8,000. Peak RSS was 172 MB at 4,000 in flight against 102 MB idle (~17.5 KB per request), so 20k in flight could approach 512 MB.
+  - Adaptive `Retry-After`: in flight ÷ the last 5s completion rate, 1–30s.
+  - The DB deadline decides one loop turn after its timer (`setImmediate`, after the I/O poll).
+  - Kept: info logging (~9 µs a line, benchmarked); DB pool 20 (CPU-bound, not pool-bound).
+- [x] CI: the compose job throttles the app container (`docker update --cpus 0.1 --memory 512m`), runs the full 20k burst through PgBouncer, uploads `burst-report.json`, asserts the container was not OOM-killed, then drains it on SIGTERM while throttled.
+
+**Verification**
+
+- `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅ · `npm run build` ✅
+- `npm test` ✅: 27 files, 308 tests (+13 since the chart follow-up)
+  - `test/burst/burst.test.ts`: a scaled run of every scenario against the real app over HTTP passes every check, including the metrics diff. Against a fake server that grants everything, exactly the checks it breaks fail. Plus the seat plan, the Zipf sampler, quantiles and the metrics parser.
+  - `Retry-After` follows in-flight ÷ completion rate and forgets an old rate.
+  - The deadline race, reproduced with a real socket: the reply lands, the loop stays busy past the deadline, and the call must still resolve. It fails without the fix.
+- **`npm run burst -- http://localhost:8080`, unthrottled:** 21,550 reserve requests in 19s (1,119 req/s), p99 472ms, 0 5xx, all 16 checks green, metrics equal on all 5 outcomes.
+- **The same, throttled to 0.1 CPU / 512 MB, after tuning:** 21,550 requests in 118s (**182 req/s**), p50 1.19s, p99 3.10s, **0 5xx, 0 network errors**, 69 balanced snapshots, all checks green. Before tuning the same setup managed ~90–100 req/s, with p99 10–20s.
+- **CI, the Docker image throttled to 0.1 CPU / 512 MB, through PgBouncer:** 21,550 requests in 206s (105 req/s, the CI runner's slower CPU), p50 2.1s, p99 6.1s, **0 5xx, 0 network errors**, every check green, metrics equal on all 5 outcomes, not OOM-killed. Fail-closed and the SIGTERM drain then pass while still throttled.
+- **2,000 and 4,000 in flight, throttled:** 0 5xx, 0 network errors, all checks green; peak RSS 150 / 172 MB.
+- **Overload (`MAX_QUEUE=500`, 2,000 in flight, throttled):** before the two fixes, 770 503s among admitted requests, and seats sold that the client never learned of (it didn't retry 503s yet). After: **0 5xx**, 687 shed with 429 and retried, every guarantee held.
+- **Simulator** in Chromium at 1280×900 and 375×812: 3,540 requests from the browser at ~500 req/s, the hall filling live, 16/16 checks passed, no horizontal scroll.
+
+**Found and fixed**
+
+- **Overload turned into 503s.** A 429 retry storm starved the admitted requests, and a due deadline timer ran before the poll that would have delivered their answers. Fixed by the adaptive `Retry-After` and by the deadline deciding after the poll.
+- **Found by CI's throttled burst** (the image behind PgBouncer): 5–10 of ~21,560 requests got 503 `db_unavailable`, while every booking guarantee held and the client's same-key retries succeeded.
+  - First hypothesis: the deadline firing on calls queued behind a cold pool on a starved CPU. That led to a real improvement: the deadline now consults `DbProgress` (when the database last answered a request-path call). It keeps waiting while the database answers others, up to 6 deadlines (60s), and still fails at 10s when nothing has answered lately. Tested: busy, silent, cap. But CI still failed, and the hypothesis could not be reproduced locally, even with PgBouncer + SCRAM, a cold pool, 0.05 CPU and a database restart.
+  - So the burst learned to name the server-side cause of any 5xx: it reads `/ops/logs?level=error` for the burst's own window. CI then answered: `08P01 server login has been failing, cached error: server DNS lookup failed (server_login_retry)`. The fail-closed step had just stopped and restarted Postgres, and for `server_login_retry` (15s) after a failed login PgBouncer refuses new server connections. The burst's first wave needed fresh ones about 14s later.
+  - The app's 503 was correct there: the pooler reported a database it had just seen die. The fix is the CI order: the throttled burst now runs on a healthy stack, before the outage test, which then runs throttled.
+- **The image build missed the shared engine:** the simulator imports `scripts/burst/core.ts`, which the Dockerfile didn't copy. Reproduced with the build stage's exact file set and fixed.
+- **The 2,000-connection accept-queue overflow** (listen backlog).
+- **The young-generation squeeze** from the heap cap.
+- In the burst itself:
+  - an abort-listener leak in `sleep`;
+  - undici caps listeners on a shared signal (so the signal is no longer handed to each fetch);
+  - 503s must be retried with the same key, or a committed booking looks like a seat "sold but never granted".
+
+**Deviations from plan**
+
+- The CI throttle uses `docker update` on the compose stack's app container, not a separate `docker run --cpus=0.1`: one image, through PgBouncer, plus the drain step while throttled.
+- The local throttled runs used a cgroup around the built server, not the Docker image: the sandbox could start Docker but could not install Alpine packages through its proxy. CI runs the image.
+- `MAX_QUEUE` default lowered and `Retry-After` made adaptive: both changes are written into Plan.md.
+
+**Open items / needs you**
+
+- **The live burst is Phase 9:** `npm run burst -- https://fdfs-dkyx.onrender.com --admin-key <ADMIN_API_KEY>`, with the key from the Render dashboard. Pushing to the deployed branch also redeploys the tuned image.
+- The simulator needs the admin key too, because it creates a show. Anyone with the key can create shows, but they are ephemeral (deleted after 24h) and capped at `MAX_SEATS_PER_SHOW`.
+
+**Commits:** see `git log`. The chart follow-up is one feature commit; Phase 8 is a tuning commit, the burst, the simulator, the CI job and a docs commit.

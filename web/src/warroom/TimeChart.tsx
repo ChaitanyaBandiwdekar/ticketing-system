@@ -1,17 +1,42 @@
 /**
- * A small live time-series chart in SVG: stacked areas (parts of a whole per second) or lines.
+ * A live time-series chart on TradingView Lightweight Charts: stacked areas (parts of a whole
+ * per second) or lines.
  *
  * Built for the War Room's 1-second points over a sliding 5-minute window: x is wall-clock time
- * ending at `now`; a gap of more than ~2.5s between points (a reconnect, a restart) breaks the
- * marks instead of drawing a line across missing data. Hover or focus shows a crosshair snapped
- * to the nearest second, with one tooltip listing every series; arrow keys step through seconds.
- * Values are always reachable without hovering too, through the table twin (ChartTable).
+ * ending at `now` (one slot per second, see chartData.ts), and a missing second breaks the marks
+ * instead of drawing across it. The window is live, so scrolling and zooming are off. Hover or
+ * focus shows a crosshair snapped to a second, with one tooltip listing every series; arrow keys
+ * step through seconds. Values are always reachable without hovering too, through the table
+ * twin (ChartTable).
+ *
+ * The chart draws on canvas, so the theme's CSS custom properties are resolved to concrete
+ * colors when it is created.
+ *
+ * Attribution (Apache-2.0, per the library's NOTICE): TradingView Lightweight Charts™,
+ * Copyright (c) 2025 TradingView, Inc. https://www.tradingview.com/. The license also asks for a
+ * link to tradingview.com on the page; the War Room carries one credit line (ChartCredit) rather
+ * than a logo inside every plot, where it would sit on top of the data.
  */
-import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  AreaSeries,
+  ColorType,
+  CrosshairMode,
+  LineSeries,
+  LineStyle,
+  TickMarkType,
+  createChart,
+  type AutoscaleInfo,
+  type IChartApi,
+  type IPriceLine,
+  type ISeriesApi,
+  type Time,
+  type UTCTimestamp,
+} from "lightweight-charts";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { cx } from "../components/ui";
+import { buildSlots, toSec, yMax, type Row, type Series } from "./chartData";
 
-export type Series = { key: string; label: string; color: string };
-export type Row = { t: number; values: (number | null)[] };
+export type { Row, Series };
 
 type Props = {
   /** Names the chart for assistive tech (the visible title lives outside). */
@@ -19,51 +44,20 @@ type Props = {
   rows: Row[];
   series: Series[];
   kind: "stacked" | "lines";
-  /** Formats a value for tooltips, direct labels and the y axis. */
+  /** Formats a value for tooltips, last-value labels and the y axis. */
   format: (v: number) => string;
   now: number;
   windowMs?: number;
   height?: number;
   /** A horizontal reference (e.g. the pool size) drawn as a labeled hairline. */
   refLine?: { value: number; label: string };
-  /** Label each line's latest value at the right edge (lines only, <= 4 series). */
+  /** Label each line's latest value on the price axis (lines only). */
   directLabels?: boolean;
   /** Lower bound for the y-axis maximum, so a quiet chart doesn't magnify noise. */
   minMax?: number;
 };
 
-const GAP_MS = 2_500;
-const M = { top: 8, bottom: 22, left: 44 };
-
-/** 1-2-5 rounding: the smallest "nice" number >= v. */
-function niceCeil(v: number): number {
-  if (v <= 0) return 1;
-  const exp = 10 ** Math.floor(Math.log10(v));
-  for (const m of [1, 2, 2.5, 5, 10]) if (m * exp >= v) return m * exp;
-  return 10 * exp;
-}
-
-function yTicks(max: number): number[] {
-  const step = niceCeil(max / 3);
-  const ticks: number[] = [];
-  for (let v = 0; v <= max + step * 0.001; v += step) ticks.push(v);
-  return ticks;
-}
-
-/** Splits rows into runs with no gap longer than GAP_MS. */
-function runs(rows: Row[]): Row[][] {
-  const out: Row[][] = [];
-  let cur: Row[] = [];
-  for (const r of rows) {
-    if (cur.length && r.t - cur[cur.length - 1]!.t > GAP_MS) {
-      out.push(cur);
-      cur = [];
-    }
-    cur.push(r);
-  }
-  if (cur.length) out.push(cur);
-  return out;
-}
+type AnySeries = ISeriesApi<"Area"> | ISeriesApi<"Line">;
 
 const clockFmt = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
@@ -71,6 +65,35 @@ const clockFmt = new Intl.DateTimeFormat(undefined, {
   second: "2-digit",
   hour12: false,
 });
+const minuteFmt = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+const secOf = (t: Time) => (typeof t === "number" ? t : 0);
+
+let probe: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * A theme color as rgba() for the canvas: resolves `var(--token)` and normalizes any CSS color
+ * the browser understands (the tokens are OKLCH) by painting one pixel.
+ */
+function resolveColor(color: string, el: Element): string {
+  const token = /^var\((--[\w-]+)\)$/.exec(color.trim());
+  const raw = token ? getComputedStyle(el).getPropertyValue(token[1]!).trim() : color;
+  if (probe === undefined) {
+    probe = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  }
+  if (!probe || !raw) return raw || "#888";
+  probe.clearRect(0, 0, 1, 1);
+  probe.fillStyle = "#888";
+  probe.fillStyle = raw;
+  probe.fillRect(0, 0, 1, 1);
+  const [r, g, b, a] = probe.getImageData(0, 0, 1, 1).data;
+  return `rgba(${r}, ${g}, ${b}, ${((a ?? 255) / 255).toFixed(3)})`;
+}
+
+type Hover = { sec: number; x: number; width: number };
 
 export function TimeChart({
   label,
@@ -86,133 +109,195 @@ export function TimeChart({
   minMax = 1,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
-  const [hover, setHover] = useState<number | null>(null);
+  const chartEl = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<{ chart: IChartApi; series: AnySeries[]; amber: string } | null>(null);
+  const priceLine = useRef<IPriceLine | null>(null);
+  const [hover, setHover] = useState<Hover | null>(null);
   const tipId = useId();
 
-  useLayoutEffect(() => {
-    const el = wrapRef.current;
+  // Read by the chart's callbacks, which outlive any one render.
+  const live = useRef({ format, minMax, ref: refLine?.value });
+  useEffect(() => {
+    live.current = { format, minMax, ref: refLine?.value };
+  });
+
+  // Recreate the chart only when its shape changes; data flows in through setData below.
+  const shape = `${kind}|${directLabels}|${series.map((s) => `${s.key}=${s.color}`).join(",")}`;
+  useEffect(() => {
+    const el = chartEl.current;
     if (!el) return;
-    setWidth(el.clientWidth);
-    const ro = new ResizeObserver(([entry]) => setWidth(Math.round(entry!.contentRect.width)));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const right = directLabels ? 92 : 12;
-  const plotW = Math.max(0, width - M.left - right);
-  const plotH = height - M.top - M.bottom;
-  const t0 = now - windowMs;
-  const visible = useMemo(() => rows.filter((r) => r.t >= t0 - 1_000), [rows, t0]);
-
-  // Stacked: cumulative tops per series; lines: the raw values.
-  const tops = useMemo(
-    () =>
-      visible.map((r) => {
-        if (kind === "lines") return r.values;
-        let acc = 0;
-        return r.values.map((v) => (acc += v ?? 0));
-      }),
-    [visible, kind],
-  );
-
-  let dataMax = 0;
-  for (const row of tops) for (const v of row) if (v != null && v > dataMax) dataMax = v;
-  const yMax = niceCeil(Math.max(minMax, dataMax, refLine ? refLine.value * 1.15 : 0));
-  const ticks = yTicks(yMax);
-
-  const x = (t: number) => M.left + ((t - t0) / windowMs) * plotW;
-  const y = (v: number) => M.top + plotH - (v / yMax) * plotH;
-
-  const index = new Map(visible.map((r, i) => [r, i]));
-  const segments = runs(visible);
-
-  const areaPaths: { d: string; edge: string; color: string; key: string }[] = [];
-  const linePaths: { d: string; color: string; key: string }[] = [];
-  if (plotW > 0) {
-    series.forEach((s, si) => {
-      for (const seg of segments) {
-        const ids = seg.map((r) => index.get(r)!);
-        if (kind === "stacked") {
-          const top = ids.map((i) => [x(visible[i]!.t), y(tops[i]![si] ?? 0)] as const);
-          const base = ids
-            .map((i) => [x(visible[i]!.t), y(si === 0 ? 0 : (tops[i]![si - 1] ?? 0))] as const)
-            .reverse();
-          const pts = (p: readonly (readonly [number, number])[]) =>
-            p.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join("L");
-          areaPaths.push({
-            d: `M${pts(top)}L${pts(base)}Z`,
-            edge: `M${pts(top)}`,
-            color: s.color,
-            key: `${s.key}-${seg[0]!.t}`,
-          });
-        } else {
-          let d = "";
-          let pen = false;
-          for (const i of ids) {
-            const v = tops[i]![si];
-            if (v == null) {
-              pen = false;
-              continue;
-            }
-            d += `${pen ? "L" : "M"}${x(visible[i]!.t).toFixed(1)},${y(v).toFixed(1)}`;
-            pen = true;
-          }
-          if (d) linePaths.push({ d, color: s.color, key: `${s.key}-${seg[0]!.t}` });
-        }
-      }
+    const theme = (name: string) => resolveColor(`var(${name})`, el);
+    const surface = theme("--color-surface");
+    const chart = createChart(el, {
+      autoSize: true,
+      layout: {
+        background: { type: ColorType.Solid, color: surface },
+        textColor: theme("--color-muted"),
+        fontFamily: getComputedStyle(el).fontFamily,
+        fontSize: 11,
+        attributionLogo: false,
+      },
+      grid: { vertLines: { visible: false }, horzLines: { color: theme("--color-line") } },
+      rightPriceScale: {
+        borderVisible: false,
+        scaleMargins: { top: 0.06, bottom: 0 },
+        minimumWidth: 52,
+      },
+      timeScale: {
+        borderVisible: false,
+        timeVisible: true,
+        secondsVisible: true,
+        fixLeftEdge: true,
+        fixRightEdge: true,
+        lockVisibleTimeRangeOnResize: true,
+        tickMarkFormatter: (t: Time, type: TickMarkType) =>
+          (type === TickMarkType.TimeWithSeconds ? clockFmt : minuteFmt).format(secOf(t) * 1000),
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: {
+          color: theme("--color-ink-2"),
+          width: 1,
+          style: LineStyle.Solid,
+          labelVisible: false,
+        },
+        horzLine: { visible: false, labelVisible: false },
+      },
+      localization: {
+        priceFormatter: (v: number) => live.current.format(v),
+        timeFormatter: (t: Time) => clockFmt.format(secOf(t) * 1000),
+      },
+      // A live window: nothing to pan to, and page scrolling must pass through on phones.
+      handleScroll: false,
+      handleScale: false,
     });
-  }
 
-  // Direct labels: each line's latest value at the right edge, nudged apart so none overlap.
-  const labels: { text: string; y: number; color: string }[] = [];
-  if (directLabels && kind === "lines" && visible.length) {
-    // Each line's latest value; a quiet last second (no data) keeps the previous label.
-    series.forEach((s, si) => {
-      let v: number | null | undefined = null;
-      for (let i = tops.length - 1; i >= 0 && v == null; i--) v = tops[i]![si];
-      if (v != null) labels.push({ text: `${s.label} ${format(v)}`, y: y(v), color: s.color });
+    // Zero-based, never below minMax, with headroom over the reference line.
+    const autoscale = (original: () => AutoscaleInfo | null): AutoscaleInfo => ({
+      priceRange: {
+        minValue: 0,
+        maxValue: yMax(
+          original()?.priceRange?.maxValue ?? 0,
+          live.current.minMax,
+          live.current.ref,
+        ),
+      },
     });
-    labels.sort((a, b) => a.y - b.y);
-    for (let i = 1; i < labels.length; i++) {
-      labels[i]!.y = Math.max(labels[i]!.y, labels[i - 1]!.y + 13);
-    }
-    const overflow = labels.length ? labels[labels.length - 1]!.y - (M.top + plotH) : 0;
-    if (overflow > 0) for (const l of labels) l.y -= overflow;
-  }
 
-  const pick = (clientX: number) => {
-    const el = wrapRef.current;
-    if (!el || !visible.length) return;
-    const px = clientX - el.getBoundingClientRect().left;
-    const t = t0 + ((px - M.left) / plotW) * windowMs;
-    let best = 0;
-    for (let i = 1; i < visible.length; i++) {
-      if (Math.abs(visible[i]!.t - t) < Math.abs(visible[best]!.t - t)) best = i;
+    const apis: AnySeries[] = new Array(series.length);
+    // Stacked: the top of the stack first, so each lower layer paints over it.
+    const order = series.map((_, i) => i);
+    if (kind === "stacked") order.reverse();
+    for (const i of order) {
+      const color = resolveColor(series[i]!.color, el);
+      apis[i] =
+        kind === "stacked"
+          ? chart.addSeries(AreaSeries, {
+              topColor: color,
+              bottomColor: color,
+              // The surface gap between stacked layers, so adjacent fills never touch.
+              lineColor: surface,
+              lineWidth: 1,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+              autoscaleInfoProvider: autoscale,
+            })
+          : chart.addSeries(LineSeries, {
+              color,
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: directLabels,
+              title: directLabels ? series[i]!.label : "",
+              crosshairMarkerRadius: 4,
+              crosshairMarkerBorderColor: surface,
+              crosshairMarkerBorderWidth: 2,
+              autoscaleInfoProvider: autoscale,
+            });
     }
-    setHover(best);
+
+    chart.subscribeCrosshairMove((p) => {
+      if (p.time === undefined || !p.point || p.point.x < 0) setHover(null);
+      else setHover({ sec: secOf(p.time), x: p.point.x, width: el.clientWidth });
+    });
+
+    chartRef.current = { chart, series: apis, amber: theme("--color-amber") };
+    return () => {
+      chartRef.current = null;
+      priceLine.current = null;
+      chart.remove();
+    };
+    // `shape` stands for kind, series and directLabels.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shape]);
+
+  const bySec = useMemo(() => new Map<number, Row>(rows.map((r) => [toSec(r.t), r])), [rows]);
+
+  useEffect(() => {
+    const c = chartRef.current;
+    if (!c) return;
+    const slots = buildSlots(rows, series.length, kind, now, windowMs);
+    c.series.forEach((s, i) => s.setData(slots[i]!));
+    c.chart.timeScale().fitContent();
+  }, [rows, now, windowMs, kind, series.length, shape]);
+
+  useEffect(() => {
+    const c = chartRef.current;
+    if (!c) return;
+    if (priceLine.current) c.series[0]?.removePriceLine(priceLine.current);
+    priceLine.current = null;
+    if (refLine && c.series[0]) {
+      // Labeled on the axis: live data piles up at the right ("now") edge of the plot.
+      priceLine.current = c.series[0].createPriceLine({
+        price: refLine.value,
+        color: c.amber,
+        lineWidth: 1,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: refLine.label,
+      });
+    }
+  }, [refLine?.value, refLine?.label, shape]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Seconds that hold a point, in order: what the arrow keys step through.
+  const t0 = toSec(now - windowMs);
+  const secs = useMemo(() => rows.map((r): number => toSec(r.t)).filter((s) => s > t0), [rows, t0]);
+
+  const moveTo = (sec: number) => {
+    const c = chartRef.current;
+    const row = bySec.get(sec);
+    if (!c || !row) return;
+    // Anchor the crosshair on the stack's top, or on the first line with a value.
+    const total = row.values.reduce<number>((a, v) => a + (v ?? 0), 0);
+    const i = kind === "stacked" ? series.length - 1 : row.values.findIndex((v) => v != null);
+    const anchor = c.series[Math.max(0, i)];
+    if (!anchor) return;
+    const value = kind === "stacked" ? total : (row.values[i] ?? 0);
+    c.chart.setCrosshairPosition(value, sec as UTCTimestamp, anchor);
+    const x = c.chart.timeScale().timeToCoordinate(sec as UTCTimestamp);
+    if (x !== null) setHover({ sec, x, width: wrapRef.current?.clientWidth ?? 0 });
+  };
+
+  const clear = () => {
+    chartRef.current?.chart.clearCrosshairPosition();
+    setHover(null);
   };
 
   const onKey = (e: KeyboardEvent) => {
-    if (!visible.length) return;
-    const last = visible.length - 1;
-    if (e.key === "ArrowLeft") setHover((h) => Math.max(0, (h ?? last + 1) - 1));
-    else if (e.key === "ArrowRight") setHover((h) => Math.min(last, (h ?? last - 1) + 1));
-    else if (e.key === "Home") setHover(0);
-    else if (e.key === "End") setHover(last);
-    else if (e.key === "Escape") setHover(null);
+    if (!secs.length) return;
+    const last = secs.length - 1;
+    const at = hover ? secs.indexOf(hover.sec) : -1;
+    if (e.key === "ArrowLeft") moveTo(secs[at < 0 ? last : Math.max(0, at - 1)]!);
+    else if (e.key === "ArrowRight") moveTo(secs[at < 0 ? last : Math.min(last, at + 1)]!);
+    else if (e.key === "Home") moveTo(secs[0]!);
+    else if (e.key === "End") moveTo(secs[last]!);
+    else if (e.key === "Escape") clear();
     else return;
     e.preventDefault();
   };
 
-  const h = hover !== null && hover < visible.length ? hover : null;
-  const hx = h !== null ? x(visible[h]!.t) : 0;
-  const tipLeft = hx > M.left + plotW / 2;
-
-  // Every minute when there is room for it, every other minute on narrow (phone) plots.
-  const xTicks = (plotW < 300 ? [4, 2, 0] : [5, 4, 3, 2, 1, 0])
-    .map((m) => ({ t: now - m * 60_000, text: m === 0 ? "now" : `−${m}m` }))
-    .filter((tk) => tk.t >= t0);
+  const row = hover ? bySec.get(hover.sec) : undefined;
+  const tipLeft = hover ? hover.x > hover.width / 2 : false;
 
   return (
     <div
@@ -222,171 +307,31 @@ export function TimeChart({
       tabIndex={0}
       role="img"
       aria-label={label}
-      aria-describedby={h !== null ? tipId : undefined}
-      onPointerMove={(e) => pick(e.clientX)}
-      onPointerDown={(e) => pick(e.clientX)}
-      onPointerLeave={() => setHover(null)}
+      aria-describedby={row ? tipId : undefined}
       onKeyDown={onKey}
-      onBlur={() => setHover(null)}
+      onBlur={clear}
     >
-      {width > 0 && (
-        <svg width={width} height={height} className="block overflow-visible" aria-hidden>
-          {ticks.map((v) => (
-            <g key={v}>
-              <line
-                x1={M.left}
-                x2={M.left + plotW}
-                y1={y(v)}
-                y2={y(v)}
-                className="stroke-line"
-                strokeWidth={1}
-                shapeRendering="crispEdges"
-              />
-              <text
-                x={M.left - 8}
-                y={y(v)}
-                dy="0.32em"
-                textAnchor="end"
-                className="tabular fill-muted text-[0.6875rem]"
-              >
-                {format(v)}
-              </text>
-            </g>
-          ))}
-          {xTicks.map((tk) => (
-            <text
-              key={tk.text}
-              x={x(tk.t)}
-              y={height - 6}
-              textAnchor={tk.text === "now" ? "end" : "middle"}
-              className="tabular fill-muted text-[0.6875rem]"
-            >
-              {tk.text}
-            </text>
-          ))}
+      <div ref={chartEl} className="absolute inset-0" aria-hidden />
 
-          {areaPaths.map((a) => (
-            <path key={a.key} d={a.d} fill={a.color} fillOpacity={0.85} />
-          ))}
-          {/* The surface gap between stacked layers, so adjacent fills never touch. */}
-          {areaPaths.map((a) => (
-            <path
-              key={`${a.key}-edge`}
-              d={a.edge}
-              fill="none"
-              className="stroke-surface"
-              strokeWidth={1.5}
-              strokeLinejoin="round"
-            />
-          ))}
-          {linePaths.map((l) => (
-            <path
-              key={l.key}
-              d={l.d}
-              fill="none"
-              stroke={l.color}
-              strokeWidth={2}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
-          ))}
-
-          {refLine && refLine.value <= yMax && (
-            <g>
-              <line
-                x1={M.left}
-                x2={M.left + plotW}
-                y1={y(refLine.value)}
-                y2={y(refLine.value)}
-                className="stroke-amber"
-                strokeWidth={1}
-                shapeRendering="crispEdges"
-              />
-              {/* Labeled at the left: live data piles up at the right ("now") edge. */}
-              <text
-                x={M.left + 6}
-                y={y(refLine.value) - 5}
-                className="fill-amber text-[0.6875rem] font-medium"
-              >
-                {refLine.label}
-              </text>
-            </g>
-          )}
-
-          {labels.map((l) => (
-            <g key={l.text}>
-              <line
-                x1={M.left + plotW + 6}
-                x2={M.left + plotW + 16}
-                y1={l.y}
-                y2={l.y}
-                stroke={l.color}
-                strokeWidth={2}
-                strokeLinecap="round"
-              />
-              <text
-                x={M.left + plotW + 20}
-                y={l.y}
-                dy="0.32em"
-                className="tabular fill-ink-2 text-[0.6875rem]"
-              >
-                {l.text}
-              </text>
-            </g>
-          ))}
-
-          {h !== null && (
-            <g>
-              <line
-                x1={hx}
-                x2={hx}
-                y1={M.top}
-                y2={M.top + plotH}
-                className="stroke-ink-2"
-                strokeWidth={1}
-                shapeRendering="crispEdges"
-              />
-              {kind === "lines" &&
-                series.map((s, si) => {
-                  const v = tops[h]![si];
-                  return v == null ? null : (
-                    <circle
-                      key={s.key}
-                      cx={hx}
-                      cy={y(v)}
-                      r={4}
-                      fill={s.color}
-                      className="stroke-surface"
-                      strokeWidth={2}
-                    />
-                  );
-                })}
-            </g>
-          )}
-        </svg>
-      )}
-
-      {width > 0 && visible.length === 0 && (
-        <p className="absolute inset-0 flex items-center justify-center pl-11 text-[0.8125rem] text-muted">
+      {rows.length === 0 && (
+        <p className="pointer-events-none absolute inset-0 flex items-center justify-center pr-12 text-[0.8125rem] text-muted">
           Waiting for the first seconds of data…
         </p>
       )}
 
-      {h !== null && (
+      {hover && row && (
         <div
           id={tipId}
           role="status"
           className={cx(
             "pointer-events-none absolute top-1 z-(--z-popover) min-w-40 rounded-md border border-line-strong bg-surface-2 px-3 py-2 shadow-lg shadow-black/40",
           )}
-          style={tipLeft ? { right: width - hx + 10 } : { left: hx + 10 }}
+          style={tipLeft ? { right: hover.width - hover.x + 10 } : { left: hover.x + 10 }}
         >
-          <p className="tabular mb-1 text-[0.6875rem] text-muted">
-            {clockFmt.format(visible[h]!.t)}
-          </p>
+          <p className="tabular mb-1 text-[0.6875rem] text-muted">{clockFmt.format(row.t)}</p>
           <ul className="flex flex-col gap-0.5">
             {(kind === "stacked" ? [...series].reverse() : series).map((s) => {
-              const v = visible[h]!.values[series.indexOf(s)];
+              const v = row.values[series.indexOf(s)];
               return (
                 <li key={s.key} className="flex items-center gap-2 text-xs">
                   <span
@@ -405,7 +350,7 @@ export function TimeChart({
               <li className="mt-1 flex items-center gap-2 border-t border-line pt-1 text-xs">
                 <span aria-hidden className="w-3" />
                 <span className="tabular min-w-10 font-semibold text-ink">
-                  {format(visible[h]!.values.reduce<number>((a, v) => a + (v ?? 0), 0))}
+                  {format(row.values.reduce<number>((a, v) => a + (v ?? 0), 0))}
                 </span>
                 <span className="text-muted">total</span>
               </li>
@@ -414,6 +359,23 @@ export function TimeChart({
         </div>
       )}
     </div>
+  );
+}
+
+/** The link to tradingview.com that the charting library's license asks for, once per page. */
+export function ChartCredit() {
+  return (
+    <p className="text-xs text-muted">
+      Charts by{" "}
+      <a
+        href="https://www.tradingview.com/"
+        target="_blank"
+        rel="noreferrer"
+        className="text-ink-2 underline-offset-2 hover:text-ink hover:underline"
+      >
+        TradingView Lightweight Charts™
+      </a>
+    </p>
   );
 }
 

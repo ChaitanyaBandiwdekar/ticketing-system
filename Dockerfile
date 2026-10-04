@@ -10,6 +10,8 @@ RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY tsconfig.json ./
 COPY server ./server
 COPY web ./web
+# The Stampede simulator (web) runs the same burst engine as the CLI.
+COPY scripts/burst/core.ts ./scripts/burst/core.ts
 RUN npm run build
 
 FROM node:22-alpine AS prod-deps
@@ -34,4 +36,7 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
   CMD wget -q -O /dev/null http://127.0.0.1:${PORT}/healthz || exit 1
 ENTRYPOINT ["/sbin/tini", "--"]
 # Heap capped below the 512 MB free-tier limit, leaving room for buffers and native memory.
-CMD ["node", "--enable-source-maps", "--max-old-space-size=384", "dist/server.js"]
+# Capping the heap also shrinks V8's young generation, and request garbage then triggers a
+# scavenge every few requests: a 16 MB semi-space cut server CPU per reserve by ~35% at 0.1 CPU
+# (Phase 8 tuning; 64 MB bought nothing more and cost ~55 MB of RSS).
+CMD ["node", "--enable-source-maps", "--max-old-space-size=384", "--max-semi-space-size=16", "dist/server.js"]

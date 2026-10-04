@@ -150,7 +150,7 @@ The core was checked against published practice before anything was built on it.
 | 4   | **Deadlock reserve↔cancel**: lazy expiry in reserve updates the old reservation (seat→reservation) while cancel goes reservation→seat                                                                        | Reserve never touches others' reservations; expired status is derived; global order is seats before reservations                                                                                                                                                                                      |
 | 5   | **Render health check pulls the instance mid-burst**: `/readyz` queued behind a saturated pool (and a 0.1 CPU event loop) times out, Render stops routing, and edge 5xx follow                               | Render's `healthCheckPath=/healthz` (cheap, no DB). The server only `listen()`s after DB connect + migrations, so live implies booted. `/readyz` uses a **dedicated 1-connection pool** with a 1s cached result and still fails closed for graders. Health routes bypass auth, admission, and logging |
 | 6   | **Sporadic 502s from keep-alive races**: Node's 5s `keepAliveTimeout` is shorter than the proxy's idle timeout, so the proxy reuses a socket Node just closed                                                | `keepAliveTimeout=65s`, `headersTimeout=66s`                                                                                                                                                                                                                                                          |
-| 7   | **OOM at 512 MB** with thousands of queued requests                                                                                                                                                          | Admission limiter (bounded in-flight, large-but-capped queue → 429 only at the extreme); `--max-old-space-size=384`; small bodies (1 MB limit); CI burst under `--memory=512m` measures it                                                                                                            |
+| 7   | **OOM at 512 MB** with thousands of queued requests                                                                                                                                                          | Admission limiter (bounded in-flight: `MAX_QUEUE` 8,000 at ~17.5 KB each, measured → 429 only at the extreme); `--max-old-space-size=384`; small bodies (1 MB limit); CI burst under `--memory=512m` checks it is never OOM-killed                                                                    |
 | 8   | **Metric cardinality leak**: a `show` label on counters grows with every burst's fresh show                                                                                                                  | Counters carry only `reason`/`outcome`; `seats{status}` gauges only for the N most recent active shows                                                                                                                                                                                                |
 | 9   | **`GET /shows/:id` polling burns CPU** (10k-seat JSON on 0.1 CPU)                                                                                                                                            | 250 ms micro-cache of the serialized snapshot (still one consistent snapshot), plus a compact seat encoding                                                                                                                                                                                           |
 | 10  | **Public admin key in a public repo** lets anyone create million-seat shows and fill the 500 MB free DB                                                                                                      | Key shared in the submission, not the repo; `MAX_SEATS_PER_SHOW=20000` (configurable); burst/simulator shows are `ephemeral` and deleted by the janitor after 24h; idempotency rows get a TTL cleanup                                                                                                 |
@@ -183,6 +183,15 @@ Plus the classics, all covered:
   - An LRU cache of verified JWTs and no API compression.
 - **One DB round-trip**, with the pool sized to the pooler (~20 clients).
 - **Fast cold start.** `node:22-alpine` multi-stage image with production deps only and a prebuilt SPA; migrations no-op when already applied.
+- **Tuned under a throttled burst (Phase 8),** with the server in a 0.1 CPU / 512 MB cgroup, which reproduces the free tier's ~90 req/s:
+  - `--max-semi-space-size=16`. Capping the heap at 384 MB also shrank V8's young generation, so request garbage triggered constant scavenges. CPU per reserve fell ~35% (≈620 → ≈400 µs), throughput rose from ~95 to ~180 req/s, and the 20k burst's p99 fell from 10–20s to ~3s. 64 MB bought nothing more and cost ~55 MB of RSS.
+  - **Listen backlog 4096.** Node's default of 511 overflowed under a 2,000-connection wave, and the kernel reset the dropped connections ~15s later.
+  - **`MAX_QUEUE` 8,000** (was 20,000). Each request in flight costs ~17.5 KB of RSS (measured at 4,000 in flight), so 20k could approach 512 MB.
+  - **Adaptive `Retry-After` on 429:** requests in flight over the recent completion rate, 1–30s. A fixed 1s invited a retry storm that starved admitted requests.
+  - **The DB deadline decides one loop turn after its timer.** A saturated event loop runs due timers before it polls I/O, so an answered query could become a 503.
+  - **The deadline is for a silent database, not a busy one.** If the database answered any other request-path call within the window, the call keeps waiting (cap: 6 deadlines). At 0.1 CPU a burst's first wave queues for 15–25s, often against a cold pool.
+  - The burst names the server-side cause of any 5xx (from `/ops/logs`). That is how CI's last 503s were traced to PgBouncer's `server_login_retry` window right after the outage test restarted Postgres: correct fail-closed behavior, fixed by running the burst first.
+  - Logging measured at ~9 µs a line: one info line per request stays. DB pool 20 stays: at 0.1 CPU the process is CPU-bound, not pool-bound.
 
 ## 4. API contract
 
@@ -220,7 +229,7 @@ A dark "opening night" box-office console, built with the design skill during th
 
 1. **Shows:** a list plus admin "create show" with a hall-layout generator (rows × seats, aisles, price).
 2. **Live hall:** a canvas cinema hall with the screen glowing at the top; seats flip colour live via SSE deltas with snapshot resync. Select → reserve with a client-generated idempotency key → hold countdown → confirm/cancel. Graceful 409 UX ("A12 was just taken; keep A13?") and My bookings.
-3. **War Room:**
+3. **War Room** (charts on TradingView Lightweight Charts, lazy-loaded with the page):
    - live per-second confirmed vs declined-by-reason
    - p50/p95/p99 latency
    - pool and queue saturation
@@ -230,7 +239,9 @@ A dark "opening night" box-office console, built with the design skill during th
 
 ## 7. Burst script: `npm run burst -- <BASE_URL>` (+ `burst.sh`, Makefile)
 
-- Creates an ephemeral show and batch-mints tokens.
+One engine (`scripts/burst/core.ts`) serves the CLI and the UI's Stampede simulator.
+
+- Creates an ephemeral show (confirm mode, so every expectation is exact) and batch-mints tokens.
 - Runs these scenarios concurrently:
   - a hot-seat storm (500 users → A12 + 5 more hot seats)
   - a Zipf-skewed stampede (~20k requests)
@@ -243,6 +254,9 @@ A dark "opening night" box-office console, built with the design skill during th
 - Polls `GET /shows/:id` _during_ the burst to check the invariant live.
 - Prints the outcome distribution (confirmed / declined by reason / other 4xx / 5xx / network errors), p50/p95/p99, throughput, the final reconciliation, and the audit result.
 - Diffs `/metrics` before and after against the observed outcomes, and **exits non-zero on any violation**.
+- Each scenario except the stampede gets its own seats and users, so its result is exact: e.g. "limit" books exactly 4 of 10.
+- A 429, a 503 or no answer is retried with the same key, honoring `Retry-After`. A replay after a failed attempt counts as that attempt's booking.
+- Every request carries an `x-request-id`; the slowest are printed so the War Room's log tail can follow them.
 
 ## 8. Repo layout (single package.json, one lockfile)
 

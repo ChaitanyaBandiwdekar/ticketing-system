@@ -19,7 +19,7 @@ import Fastify, {
 } from "fastify";
 import type { Logger } from "pino";
 import type { Config } from "../config";
-import { withDeadline } from "../db/deadline";
+import { DbProgress, withDeadline } from "../db/deadline";
 import type { Sql } from "../db/pool";
 import { LogBuffer } from "../obs/logbuffer";
 import { createLogger } from "../obs/logger";
@@ -142,6 +142,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   );
   app.decorate("realtime", { bus, hub });
   const admission = new Admission(config.admission.maxQueue);
+  /** When the database last answered a request-path call (see DbProgress). */
+  const dbProgress = new DbProgress();
   const ops = new OpsHub(metrics, logs, {
     pool_max: config.db.poolMax,
     admission_capacity: config.admission.maxQueue,
@@ -169,7 +171,13 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     bus,
     hub,
     obs,
-    db: (work) => withDeadline(metrics.trackDb(work), config.db.requestTimeoutMs),
+    db: (work) => {
+      work.then(
+        () => dbProgress.mark(),
+        () => {},
+      );
+      return withDeadline(metrics.trackDb(work), config.db.requestTimeoutMs, dbProgress);
+    },
   };
 
   app.addHook("onRequest", async (request, reply) => {
@@ -183,9 +191,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         "overloaded",
         "server is at capacity; retry shortly",
         {},
-        {
-          "retry-after": "1",
-        },
+        { "retry-after": String(ctx.admission.retryAfterSeconds()) },
       );
     }
     // "close" fires exactly once whether the response finished or the client went away.
