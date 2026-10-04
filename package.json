@@ -2,7 +2,7 @@
   "name": "firstdayfirstshow",
   "version": "0.1.0",
   "private": true,
-  "description": "FirstDayFirstShow (FDFS) \u2014 seat reservation that stays correct under an on-sale stampede.",
+  "description": "FirstDayFirstShow (FDFS) — seat reservation that stays correct under an on-sale stampede.",
   "type": "module",
   "engines": {
     "node": ">=20.19"
