@@ -81,8 +81,8 @@ Every function acquires locks in this order. `ORDER BY seats.id`, an integer, is
 **`reserve(show, user, labels[], idem_key, req_hash)`:**
 
 1. **Snapshot fast path, no locks.** One statement reads the user's idempotency row _and_ the requested seats' effective states in the **same snapshot**:
-   - Key present with the same hash → **replay** (200 + `Idempotent-Replayed: true`, original body with its current status).
-   - Key present with a different hash → **422 `idempotency_key_reused`** (IETF Idempotency-Key draft: payload mismatch is 422).
+   - Key present with the same hash → **replay**: the original 201 and reservation body (with its current status), plus `Idempotent-Replayed: true`. (It was 200 until Phase 9's evaluator audit; the assignment defines only 201.)
+   - Key present with a different hash → **409 `idempotency_key_reused`**, as the assignment specifies. (It was 422, the IETF Idempotency-Key draft's status, until Phase 9's evaluator audit.)
    - Unknown labels → 400.
    - The user's active seats + n > limit → **409 `per_user_limit`** (checked before seats, as on the locked path).
    - Any seat taken → **409 `seat_taken`** with `unavailable_seats`.
@@ -132,7 +132,7 @@ The core was checked against published practice before anything was built on it.
 | Keys scoped per user, request fingerprint, ~24–72h reaping (Stripe, brandur.org)                                                                                              | ✅ `(user_id, key)` PK, sha256 of show + seat set, 24h TTL job                                                                                                                                                                                            |
 | Track in-flight keys so a crash can't wedge them (`locked_at` + recovery points, Stripe)                                                                                      | ✅ stronger: the whole request is one atomic transaction, so "in flight" is just the uncommitted key row and a crash rolls it back. No external calls, so no recovery points are needed                                                                   |
 | Concurrent duplicate while the original is in flight → 409 (IETF draft, brandur)                                                                                              | ⚠️ deliberate deviation: the duplicate waits on the key's unique-index slot (bounded by `lock_timeout`) and then **replays**. The original takes milliseconds, so waiting is cheaper than a 409 + client retry loop, and every retry gets the real answer |
-| Payload mismatch → 422 (IETF draft)                                                                                                                                           | ✅ `idempotency_key_reused` → 422                                                                                                                                                                                                                         |
+| Payload mismatch → 422 (IETF draft)                                                                                                                                           | ⚠️ deliberate deviation: `idempotency_key_reused` → 409, because the assignment asks for 409 (422 until Phase 9's evaluator audit)                                                                                                                        |
 | Store the response for failures too (Stripe)                                                                                                                                  | ⚠️ deliberate deviation: a decline has no side effects, so it doesn't consume the key. A retry of a declined request is re-evaluated, and that can never double-book                                                                                      |
 | Only transaction-scoped advisory locks behind a transaction pooler; two-int keys to cut hash collisions                                                                       | ✅ `pg_advisory_xact_lock(hashtext(show), hashtext(user))`: a 64-bit key space, and a collision only serializes                                                                                                                                           |
 | Avoid FKs onto a hot parent row: every child insert takes `FOR KEY SHARE`, and concurrent key-share lockers become MultiXacts, a known throughput cliff (pganalyze, Azure PG) | ✅ fixed in review: `reservations.show_id` has no FK. A regression test proves reserve never locks the show row. It failed (blocked 2.8s) before the fix                                                                                                  |
@@ -197,10 +197,10 @@ Plus the classics, all covered:
 
 - **Auth:** `POST /auth/login {username}` → `{token, user_id}` (HS256 JWT, 24h, `sub`). `POST /auth/tokens {count, prefix}` batch-mints tokens for load tests (capped, CPU-only).
 - **Create show:** `POST /shows` (admin: `Authorization: Bearer <ADMIN_API_KEY>`). Body `{name, seats[], price_paise, per_user_limit?=4, hold_ttl_seconds?, ephemeral?}` → 201 with every seat available.
-- **Reserve:** `POST /shows/:id/reserve` with `{seats, idempotency_key}` or the `Idempotency-Key` header. The key is required; a header/body mismatch → 400. Returns 201 `{reservation_id, show_id, user_id, seats, amount_paise, status, expires_at?}`.
+- **Reserve:** `POST /shows/:id/reserve` with `{seats, idempotency_key}` or the `Idempotency-Key` header. Without a key the server assigns a fresh one, so the request is booked or declined on its own but can't be replayed; an empty key or a header/body mismatch → 400. Returns 201 `{reservation_id, show_id, user_id, seats, amount_paise, status, expires_at?}`.
 - **Lifecycle:** `POST /reservations/:id/confirm` (hold mode), `POST /reservations/:id/cancel` (owner only), `GET /me/reservations?show_id=`.
 - **Reads:** `GET /shows`; `GET /shows/:id` (seats + `{total, available, held, confirmed, invariant_ok}`); `GET /shows/:id/audit`.
-- **Status codes:** 201 created · 200 idempotent replay · 400 validation (incl. missing `Idempotency-Key`) · 401 bad/missing token · 403 not owner/admin · 404 unknown show/reservation · 409 domain decline (`seat_taken`, `per_user_limit`, `reservation_expired`, `reservation_cancelled`) · 422 `idempotency_key_reused` · 429 only on extreme overload · 503 DB unreachable or contention.
+- **Status codes:** 201 created, and an idempotent replay (the original 201 + `Idempotent-Replayed: true`) · 400 validation (incl. an empty `Idempotency-Key`) · 401 bad/missing token · 403 not owner/admin · 404 unknown show/reservation · 409 domain decline (`seat_taken`, `per_user_limit`, `idempotency_key_reused`, `reservation_expired`, `reservation_cancelled`) · 429 only on extreme overload · 503 DB unreachable or contention.
 - **Error shape:** `{error:{code,message,request_id,...}}`.
 - **Health & metrics:** `GET /healthz` (liveness), `GET /readyz` (dedicated DB check, fails closed), `GET /metrics`.
 
@@ -229,7 +229,7 @@ A dark "opening night" box-office console, built with the design skill during th
 
 1. **Shows:** a list plus admin "create show" with a hall-layout generator (rows × seats, aisles, price).
 2. **Live hall:** a canvas cinema hall with the screen glowing at the top; seats flip colour live via SSE deltas with snapshot resync. Select → reserve with a client-generated idempotency key → hold countdown → confirm/cancel. Graceful 409 UX ("A12 was just taken; keep A13?") and My bookings.
-3. **War Room** (charts on TradingView Lightweight Charts, lazy-loaded with the page):
+3. **War Room** (plain SVG charts; Lightweight Charts was tried in Phase 7's follow-up and removed in Phase 9's redesign):
    - live per-second confirmed vs declined-by-reason
    - p50/p95/p99 latency
    - pool and queue saturation
@@ -342,7 +342,7 @@ Real values live only in `.env` (gitignored) and in Render (`sync:false`). You p
 - Multi-stage Dockerfile + compose (PG17 + PgBouncer transaction mode).
 - CI builds the image and smoke-tests the compose stack.
 
-✔ API integration tests pass (spoofed body ignored, foreign cancel 403, replay 200 with the same body, unknown seat 400). The CI compose job is green.
+✔ API integration tests pass (spoofed body ignored, foreign cancel 403, replay with the same body, unknown seat 400). The CI compose job is green.
 
 **Phase 3b: Smoke deploy.**
 

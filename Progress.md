@@ -636,7 +636,9 @@ The previous session ended after Phase 7's commits; nothing of Phase 8 had been 
   - The page leads with a verdict line and the last burst's scorecard (checks, seats sold, where every request went, latency ruler). Live traffic is three groups (booked / declined correctly / failed) as columns, latency p50/p99 below, over 1/5/10 minutes. The DB pool, event loop, memory, jobs and log tail moved under a folded Internals section.
   - Charts are plain SVG now (`web/src/warroom/TimeChart.tsx`, `Meter.tsx`, `LatencyRuler.tsx`); `lightweight-charts` is gone.
   - Verified: typecheck, lint, 29 files / **326 tests** (+3 for runs); two local bursts (PASS) against the built bundle on an embedded Postgres; screenshots at 1280 px and 375 px (no horizontal scroll).
-- [ ] Live 20k burst against the public URL (needs the live admin key), with its report and War Room screenshots captured into `docs/`.
+- [x] Live 20k-scale burst against the public URL: 21,600 requests, PASS (run by the human with the live admin key).
+- [x] **Alignment pass** against the assignment (see `docs/ai-log.md`): `POST /shows` now returns every seat (`seats[{label,status}]`, all available), as the assignment says; `WRITEUP.md`, `Plan.md`, the README and the AI log were brought in line with the code. 29 files, **330 tests** passed.
+- [ ] Capture a live burst's report and War Room screenshots into `docs/`.
 
 **Verification so far**
 
