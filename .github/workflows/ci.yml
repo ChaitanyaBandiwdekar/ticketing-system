@@ -41,9 +41,9 @@ jobs:
       - run: npm test
 
   compose:
-    name: docker image · compose stack (PgBouncer transaction mode) · smoke
+    name: docker image · compose stack (PgBouncer transaction mode) · smoke · throttled burst
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       ADMIN_API_KEY: ci-admin-key-0123456789
       JWT_SECRET: ci-jwt-secret-0123456789abcdef0123456789
@@ -77,6 +77,24 @@ jobs:
         run: scripts/ci/fail-closed.sh http://localhost:8080
       - name: Smoke again after recovery
         run: scripts/smoke.sh http://localhost:8080 "$ADMIN_API_KEY"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Throttle the app to Render's free tier (0.1 CPU, 512 MB)
+        run: docker update --cpus 0.1 --memory 512m --memory-swap 512m "$(docker compose ps -q app)"
+      - name: Burst (20k) against the throttled app, through PgBouncer
+        run: npm run burst -- http://localhost:8080 --admin-key "$ADMIN_API_KEY" --json burst-report.json
+      - name: Burst report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burst-report
+          path: burst-report.json
+          if-no-files-found: ignore
+      - name: Not OOM-killed under the burst
+        run: test "$(docker inspect --format '{{.State.OOMKilled}}' "$(docker compose ps -q app)")" = "false"
       - name: Graceful drain on SIGTERM (exit code 0)
         run: |
           docker compose stop -t 30 app
