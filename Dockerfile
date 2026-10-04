@@ -10,6 +10,8 @@ RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY tsconfig.json ./
 COPY server ./server
 COPY web ./web
+# The Stampede simulator (web) runs the same burst engine as the CLI.
+COPY scripts/burst/core.ts ./scripts/burst/core.ts
 RUN npm run build
 
 FROM node:22-alpine AS prod-deps
