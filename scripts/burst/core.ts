@@ -146,6 +146,12 @@ export type BurstReport = {
   scenarios: Record<Scenario, Record<string, number>>;
   status: { "2xx": number; "4xx": number; "429": number; "5xx": number; network: number };
   retries: number;
+  /**
+   * Requests that reached the server twice through one fetch, with no failure the client saw: the
+   * browser or an edge proxy re-sent it after the connection dropped. The first copy booked, its
+   * answer was lost, and the client got the replay. Each one is still that request's booking.
+   */
+  resent: number;
   reserveRequests: number;
   throughput: number;
   latency: { p50: number; p95: number; p99: number; max: number } | null;
@@ -180,6 +186,8 @@ type Resp = {
   retryAfter?: number;
   /** An earlier attempt of this request failed (503 or no answer), so it may have committed. */
   afterFailure?: boolean;
+  /** Its idempotency key was also sent by another request, so a replay may be that one's booking. */
+  sharedKey?: boolean;
 };
 
 /** 0 -> "A", 25 -> "Z", 26 -> "AA" (same lettering as the UI's hall generator). */
@@ -405,6 +413,9 @@ export async function runBurst(
   const latencies: number[] = [];
   let reserveRequests = 0;
   let retries = 0;
+  let resent = 0;
+  /** Reserve attempts that got no answer: the server may have answered (and counted) them. */
+  let unanswered = 0;
   let sent = 0;
   /** A few distinct network-error causes, for the report. */
   const networkErrors: string[] = [];
@@ -475,7 +486,8 @@ export async function runBurst(
     else httpStatus["2xx"]++;
     if (reserve) {
       reserveRequests++;
-      if (r.status !== 0) {
+      if (r.status === 0) unanswered++;
+      else {
         bump(outcomes, r.outcome);
         latencies.push(r.ms);
         if (slowest.length < SLOWEST || r.ms > slowest.at(-1)!.ms) {
@@ -582,27 +594,35 @@ export async function runBurst(
   };
   const key = () => crypto.randomUUID();
 
+  /**
+   * One reserve. Without `key` it gets a fresh one of its own. Pass `shared` when the key is (or
+   * was) also sent by another request: only then can a replay be somebody else's booking.
+   */
   const reserve = async (
     s: Scenario,
     u: User,
     seatList: string[],
-    k = key(),
-    extra: Record<string, unknown> = {},
+    opts: { key?: string; shared?: boolean; extra?: Record<string, unknown> } = {},
   ): Promise<Resp> => {
     const r = await call(
       "POST",
       `${showPath}/reserve`,
-      { bearer: u.token, key: k, body: { seats: seatList, ...extra } },
+      { bearer: u.token, key: opts.key ?? key(), body: { seats: seatList, ...opts.extra } },
       true,
     );
-    // A replay after a failed attempt is that attempt's booking: it committed after all.
+    r.sharedKey = opts.shared === true;
+    if (r.outcome === "replayed" && !r.sharedKey && !r.afterFailure) resent++;
     const won = isWin(r);
     bump(scen[s], won ? "created" : r.outcome);
     if (won) granted.push({ ...(r.body as Reservation), scenario: s });
     return r;
   };
+  // A replay of a key nobody else sent is this request's own booking: an earlier attempt that
+  // failed, or a copy re-sent in transit, committed it and its answer was lost. A replay of a
+  // shared key is a win only after a failed attempt (the shared-key scenarios check the rest).
   const isWin = (r: Resp) =>
-    r.outcome === "created" || (r.outcome === "replayed" && r.afterFailure === true);
+    r.outcome === "created" ||
+    (r.outcome === "replayed" && (r.afterFailure === true || !r.sharedKey));
   const idOf = (r: Resp) => (r.body as Reservation | null)?.reservation_id;
 
   const tasks: (() => Promise<void>)[] = [];
@@ -636,8 +656,17 @@ export async function runBurst(
     const want = [seats.crowd[pick()]!];
     tasks.push(async () => {
       const rs = await Promise.all(
-        Array.from({ length: o.retryCopies }, () => reserve("retry", u, want, k)),
+        Array.from({ length: o.retryCopies }, () =>
+          reserve("retry", u, want, { key: k, shared: true }),
+        ),
       );
+      // Every copy replayed and none saw a failure: the copy that booked was re-sent in transit
+      // and its answer lost. The booking is still the group's.
+      const replay = rs.find((r) => r.outcome === "replayed");
+      if (replay && !rs.some(isWin)) {
+        resent++;
+        granted.push({ ...(replay.body as Reservation), scenario: "retry" });
+      }
       const ids = new Set(rs.filter((r) => r.status === 201).map(idOf));
       const createdN = rs.filter((r) => r.outcome === "created").length;
       const declined = rs.filter((r) => r.status === 409).length;
@@ -655,18 +684,18 @@ export async function runBurst(
     const [x, y] = takeSeats(2) as [string, string];
     tasks.push(async () => {
       const k = key();
-      const first = await reserve("keyreuse", u, [x], k);
+      const first = await reserve("keyreuse", u, [x], { key: k });
       if (!isWin(first)) {
         return fail("keyreuse", `${u.id}: first request ${first.outcome}`);
       }
-      const other = await reserve("keyreuse", u, [y], k);
+      const other = await reserve("keyreuse", u, [y], { key: k, shared: true });
       if (other.outcome !== "idempotency_key_reused") {
         fail(
           "keyreuse",
           `${u.id}: same key, other seat → ${other.outcome}, not idempotency_key_reused`,
         );
       }
-      const again = await reserve("keyreuse", u, [x], k);
+      const again = await reserve("keyreuse", u, [x], { key: k, shared: true });
       if (again.outcome !== "replayed" || idOf(again) !== idOf(first)) {
         fail(
           "keyreuse",
@@ -712,7 +741,7 @@ export async function runBurst(
   for (const u of takeUsers(o.spoofs)) {
     const [seat] = takeSeats(1) as [string];
     tasks.push(async () => {
-      const r = await reserve("spoof", u, [seat], key(), { user_id: `${run}-victim` });
+      const r = await reserve("spoof", u, [seat], { extra: { user_id: `${run}-victim` } });
       if (!isWin(r)) return fail("spoof", `${u.id}: ${r.outcome}`);
       const owner = (r.body as Reservation).user_id;
       if (owner !== u.id) fail("spoof", `${u.id}: booking recorded for ${owner}`);
@@ -986,13 +1015,31 @@ export async function runBurst(
   }
 
   if (metrics) {
-    const off = metrics.filter((m) => m.observed !== m.delta);
+    // The server counts a response once it has sent it; the client only counts what arrived. An
+    // answer lost on the way (a network error, or a copy re-sent in transit) is counted by the
+    // server alone, so the metric may run ahead, by at most one per such request. It may never
+    // fall behind: every response the client saw was sent, and counted, by the server.
+    const behind = metrics.filter((m) => m.delta < m.observed);
+    const ahead = metrics.filter((m) => m.delta > m.observed);
+    const lost = ahead.reduce((a, m) => a + m.delta - m.observed, 0);
+    const mayLose = unanswered + resent;
+    const off = [...behind, ...(lost > mayLose ? ahead : [])];
+    const lostNote =
+      `${lost} answer${lost === 1 ? "" : "s"} the server sent never arrived ` +
+      `(${ahead.map((m) => `${m.outcome} +${m.delta - m.observed}`).join(", ")})`;
     check(
       "metrics match observations",
       off.length === 0,
       off.length
-        ? off.map((m) => `${m.outcome}: saw ${m.observed}, metric +${m.delta}`).join("; ")
-        : `fdfs_reserve_responses_total agrees on all ${metrics.length} outcomes`,
+        ? off.map((m) => `${m.outcome}: saw ${m.observed}, metric +${m.delta}`).join("; ") +
+            (lost > mayLose
+              ? `; more than the ${mayLose} requests whose answer was lost in transit`
+              : "")
+        : lost
+          ? `fdfs_reserve_responses_total agrees on ${metrics.length - ahead.length} of ` +
+            `${metrics.length} outcomes; ${lostNote}, within the ${mayLose} requests whose ` +
+            `answer was lost in transit`
+          : `fdfs_reserve_responses_total agrees on all ${metrics.length} outcomes`,
     );
   }
 
@@ -1006,6 +1053,7 @@ export async function runBurst(
     scenarios: scen,
     status: httpStatus,
     retries,
+    resent,
     reserveRequests,
     throughput: reserveRequests / Math.max(0.001, durationMs / 1000),
     latency: sortedLat.length

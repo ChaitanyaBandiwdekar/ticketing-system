@@ -541,6 +541,7 @@ function ReportSummary({ report }: { report: BurstReport }) {
         <p className="text-xs text-muted">
           {num(report.status["429"])} shed with 429 and retried · {num(report.status["5xx"])} 5xx ·{" "}
           {num(report.status.network)} network errors
+          {report.resent > 0 && ` · ${num(report.resent)} re-sent in transit, booked once`}
         </p>
       </div>
     </section>

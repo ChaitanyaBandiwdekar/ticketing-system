@@ -232,3 +232,15 @@ Production still runs Node 22 in Docker.
 
 - Replays return 201, not 200 (the human chose this). It is the reading of the email that's safest against a grader's script, and it is how Stripe-style replays behave.
 - The live 20k burst is run by the human with the live admin key, after this redeploys.
+
+### Stampede over Render's edge
+
+**Human:** ran the browser Stampede against Render (2,000 seats, 256 in flight) and got five failed checks while the server audit was clean. Asked for the checker to be fixed.
+
+**AI:**
+
+- Traced the failures to the network, not the server. 168 fetches failed. Six bookings reached the server twice through a single `fetch()`: the first copy booked, its answer was lost, and the browser saw only the replay. The burst counted a replay as a win only after a failure it had seen, so those seats showed as "sold but never granted". The same cause produced "stampede replayed×2" and "limit: 0 created".
+- A replay on a key that only one request sent is now that request's booking. The retry and key-reuse scenarios share keys on purpose, so they still tell a replay apart from a booking. The report counts these as `resent`.
+- `/metrics` may now run ahead of what the client saw, by at most the number of answers lost in transit (network errors plus re-sent requests). The check reports that gap and fails only beyond it. It still fails if the server counts fewer than the client saw.
+- "No network errors" is unchanged: it is the real signal on a run like this.
+- Tests replay each case against the real app through a lossy `fetch`: re-sent bookings, answers dropped after the server sent them, and declines duplicated beyond what the client can account for.

@@ -79,6 +79,78 @@ describe("burst against the real app", () => {
     expect(progress.at(-1)).toBe(plannedRequests(o));
   });
 
+  describe("over a lossy network", () => {
+    afterEach(() => vi.unstubAllGlobals());
+    const real = globalThis.fetch;
+    const isReserve = (url: string, init: RequestInit) =>
+      init.method === "POST" && new URL(url).pathname.endsWith("/reserve");
+
+    it("a booking re-sent in transit is still the request's own", async () => {
+      const base = await t.listen();
+      // What a browser or an edge proxy does after a dropped connection: the first copy books,
+      // its answer is lost, the same request goes again and the client sees only the replay.
+      let created = 0;
+      let resent = 0;
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const res = await real(url, init);
+        if (!isReserve(url, init) || res.status !== 201) return res;
+        if (res.headers.get("idempotent-replayed") === "true" || ++created % 5) return res;
+        await res.text();
+        resent++;
+        return real(url, init);
+      });
+
+      const report = await runBurst({ ...SMALL, base, adminKey: TEST_ADMIN_KEY });
+
+      expect(report.checks.filter((c) => !c.ok)).toEqual([]);
+      expect(resent).toBeGreaterThan(0);
+      expect(report.resent).toBe(resent);
+      const o = { ...DEFAULTS, ...SMALL } as BurstOptions;
+      expect(report.scenarios.limit.created).toBe(o.limitUsers * o.perUserLimit);
+      expect(report.scenarios.stampede.replayed).toBeUndefined();
+      const metrics = report.checks.find((c) => c.name === "metrics match observations")!;
+      expect(metrics.detail).toContain(`${resent} answers the server sent never arrived`);
+    });
+
+    it("answers lost after the server sent them fail only 'no network errors'", async () => {
+      const base = await t.listen();
+      let n = 0;
+      let dropped = 0;
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        const res = await real(url, init);
+        if (!isReserve(url, init) || ++n % 10) return res;
+        await res.text();
+        dropped++;
+        throw new TypeError("fetch failed");
+      });
+
+      const report = await runBurst({ ...SMALL, base, adminKey: TEST_ADMIN_KEY });
+
+      const failed = report.checks.filter((c) => !c.ok).map((c) => c.name);
+      expect(failed).toEqual(["no network errors"]);
+      expect(report.status.network).toBe(dropped);
+      const metrics = report.checks.find((c) => c.name === "metrics match observations")!;
+      expect(metrics.detail).toContain(`${dropped} answers the server sent never arrived`);
+    });
+
+    it("still fails when the metrics run ahead by more than was lost", async () => {
+      const base = await t.listen();
+      // Every 10th reserve goes to the server twice, unseen: a declined copy can't be spotted
+      // by the client, so the server's extra counts exceed what the client can account for.
+      let n = 0;
+      vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+        if (isReserve(url, init) && ++n % 10 === 0) await (await real(url, init)).text();
+        return real(url, init);
+      });
+
+      const report = await runBurst({ ...SMALL, base, adminKey: TEST_ADMIN_KEY });
+
+      const metrics = report.checks.find((c) => c.name === "metrics match observations")!;
+      expect(metrics.ok).toBe(false);
+      expect(metrics.detail).toMatch(/more than the \d+ requests whose answer was lost/);
+    });
+  });
+
   it("refuses to start without a valid admin key", async () => {
     const base = await t.listen();
     await expect(runBurst({ ...SMALL, base, adminKey: "wrong-key-0123456789" })).rejects.toThrow(
