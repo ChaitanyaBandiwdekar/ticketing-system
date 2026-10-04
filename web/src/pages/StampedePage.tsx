@@ -27,17 +27,7 @@ import {
   type Progress,
 } from "../../../scripts/burst/core";
 import { Occupancy } from "../components/Occupancy";
-import {
-  Button,
-  Field,
-  Input,
-  Notice,
-  Pill,
-  Segmented,
-  Skeleton,
-  Switch,
-  cx,
-} from "../components/ui";
+import { Button, Input, Notice, Pill, Segmented, Skeleton, Switch, cx } from "../components/ui";
 import { HallCanvas, HallLegend, Screen } from "../hall/HallCanvas";
 import { hallGeometry } from "../hall/geometry";
 import { useLiveShow } from "../hall/useLiveShow";
@@ -89,15 +79,13 @@ const PRESETS: Preset[] = [
   {
     id: "quick",
     name: "Quick check",
-    blurb:
-      "A short run on a mid-size hall. Every scenario fires at a modest scale, so it is the best first run.",
+    blurb: "Best first run",
     settings: INITIAL,
   },
   {
     id: "full",
     name: "Full release night",
-    blurb:
-      "The scale of npm run burst: the largest hall, a crowd of thousands and the most requests the form allows, 256 at a time.",
+    blurb: "Same scale as npm run burst",
     settings: {
       hall: "large",
       users: 5_000,
@@ -268,7 +256,7 @@ function Step({
   );
 }
 
-/** Each preset as a card that says what it simulates and every value it sets. */
+/** Each preset as a card: its name, what it is for, and the scale it sets. */
 function PresetPicker({
   value,
   onPick,
@@ -279,24 +267,17 @@ function PresetPicker({
   disabled: boolean;
 }) {
   const name = useId();
-  const custom = !PRESETS.some((p) => sameSettings(value, p.settings));
   return (
     <fieldset className="flex flex-col gap-2" disabled={disabled}>
       <legend className="sr-only">Scenario preset</legend>
       {PRESETS.map((p) => {
         const on = sameSettings(value, p.settings);
         const ps = p.settings;
-        const facts: [string, string][] = [
-          ["Hall", `${num(seatsIn(ps.hall))} seats`],
-          ["Crowd", `${num(ps.users)} users`],
-          ["Hot seat", `${num(ps.hotUsers)} users`],
-          ["At once", `${num(ps.concurrency)} requests`],
-        ];
         return (
           <label
             key={p.id}
             className={cx(
-              "flex cursor-pointer flex-col gap-2 rounded-lg border p-3 transition-colors duration-150",
+              "flex cursor-pointer flex-col gap-1 rounded-lg border px-3 py-2.5 transition-colors duration-150",
               "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-primary-ink",
               "has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60",
               on
@@ -328,31 +309,12 @@ function PresetPicker({
                 {num(planned(ps))} requests
               </Pill>
             </span>
-            <span className="text-[0.8125rem] text-pretty text-ink-2">{p.blurb}</span>
-            <dl className="tabular grid grid-cols-2 gap-x-4 gap-y-1 border-t border-line pt-2 text-xs">
-              {facts.map(([k, v]) => (
-                <div key={k} className="flex justify-between gap-2">
-                  <dt className="text-muted">{k}</dt>
-                  <dd className="whitespace-nowrap text-ink">{v}</dd>
-                </div>
-              ))}
-            </dl>
-            <span className="text-xs text-pretty text-muted">
-              Traps: {ps.retryPct}% same-key retries, {ps.spoofPct}% spoofed user_id,{" "}
-              {num(ps.overLimitUsers)} over-limit users
-              {ps.edgeCases ? ", edge cases on" : ""}.
+            <span className="tabular pl-6 text-xs text-muted">
+              {p.blurb} · {num(seatsIn(ps.hall))} seats · {num(ps.users)} users
             </span>
           </label>
         );
       })}
-      {custom && (
-        <p className="text-xs text-muted" role="status">
-          <Pill tone="amber" className="mr-1.5">
-            Custom
-          </Pill>
-          Your settings match no preset. Picking one replaces them.
-        </p>
-      )}
     </fieldset>
   );
 }
@@ -367,7 +329,7 @@ function NumberRow({
   suffix,
 }: {
   label: string;
-  hint: ReactNode;
+  hint?: ReactNode;
   value: number;
   onChange: (v: number) => void;
   error?: string;
@@ -650,8 +612,9 @@ export function StampedePage() {
     fire(toOptions(s, key.trim()));
   };
 
+  const keyError = errors.key ?? (keyRejected ? "That admin key isn't valid." : undefined);
   const show = run.phase === "idle" ? null : run.show;
-  const { hotSeats, perUserLimit, limitParallel, retryCopies, pairShare } = DEFAULTS;
+  const { hotSeats, perUserLimit, limitParallel, retryCopies } = DEFAULTS;
 
   return (
     <div className="flex flex-col gap-6">
@@ -672,45 +635,39 @@ export function StampedePage() {
         <form
           onSubmit={onSubmit}
           noValidate
-          className="flex flex-col gap-6 rounded-lg border border-line bg-surface p-4"
+          className="flex flex-col gap-5 rounded-lg border border-line bg-surface p-4"
           aria-label="Stampede settings"
         >
-          <Step
-            n={1}
-            title="Admin access"
-            hint="Each run creates its own show, which only an admin can do."
-          >
-            <Field
-              label="Admin key"
-              hint="Kept for this tab only."
-              error={errors.key ?? (keyRejected ? "That admin key isn't valid." : undefined)}
-            >
-              {({ id, describedBy, invalid }) => (
-                <Input
-                  id={id}
-                  type="password"
-                  autoComplete="off"
-                  aria-describedby={describedBy}
-                  invalid={invalid}
-                  value={key}
-                  onChange={(e) => setKey(e.target.value)}
-                />
-              )}
-            </Field>
+          <Step n={1} title="Admin key">
+            <Input
+              type="password"
+              autoComplete="off"
+              placeholder="Needed to create the show"
+              aria-label="Admin key"
+              aria-describedby={keyError ? "stampede-key-error" : undefined}
+              invalid={!!keyError}
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+            />
+            {keyError && (
+              <p
+                id="stampede-key-error"
+                role="alert"
+                className="-mt-1 text-[0.8125rem] text-danger"
+              >
+                {keyError}
+              </p>
+            )}
           </Step>
 
-          <Step
-            n={2}
-            title="Pick a scenario"
-            hint="A preset fills in every setting below. Not sure? Start with Quick check."
-          >
+          <Step n={2} title="Pick a scenario" aside={custom && <Pill tone="amber">Custom</Pill>}>
             <PresetPicker value={s} onPick={setS} disabled={running} />
           </Step>
 
           <Step
             n={3}
             title="Fine-tune"
-            hint="Optional. Change any number the preset set; each one is explained."
+            hint="Optional"
             aside={
               <Button
                 type="button"
@@ -721,7 +678,7 @@ export function StampedePage() {
                 onClick={() => setTuning(!tuneOpen)}
                 className="-mt-1 shrink-0"
               >
-                {tuneOpen ? "Hide" : custom ? "Edit" : "Show"}
+                {tuneOpen ? "Hide" : "Show"}
                 <svg
                   aria-hidden
                   viewBox="0 0 16 16"
@@ -738,24 +695,20 @@ export function StampedePage() {
             {tuneOpen && (
               <div
                 id="stampede-tune"
-                className="flex flex-col gap-6 rounded-md bg-surface-2/40 p-3"
+                className="flex flex-col gap-5 rounded-md bg-surface-2/40 p-3"
               >
-                <Group title="Hall and crowd">
-                  <div className="flex flex-col gap-1.5">
-                    <Segmented
-                      label="Hall size"
-                      value={s.hall}
-                      onChange={set("hall")}
-                      options={(Object.keys(HALLS) as Hall[]).map((h) => ({
-                        value: h,
-                        label: HALLS[h].label,
-                      }))}
-                    />
-                    <p className="text-xs text-muted">Seats in the fresh show the crowd storms.</p>
-                  </div>
+                <Group title="Crowd">
+                  <Segmented
+                    label="Hall"
+                    value={s.hall}
+                    onChange={set("hall")}
+                    options={(Object.keys(HALLS) as Hall[]).map((h) => ({
+                      value: h,
+                      label: HALLS[h].label,
+                    }))}
+                  />
                   <NumberRow
-                    label="Crowd"
-                    hint={`Distinct signed-in users. Each may hold up to ${perUserLimit} seats.`}
+                    label="Users"
                     suffix="users"
                     value={s.users}
                     onChange={set("users")}
@@ -763,24 +716,23 @@ export function StampedePage() {
                   />
                   <NumberRow
                     label="Booking requests"
-                    hint={`Reserve calls from the crowd, mostly at the best seats; ${Math.round(pairShare * 100)}% ask for two.`}
                     value={s.requests}
                     onChange={set("requests")}
                     error={errors.requests}
                   />
                   <NumberRow
                     label="At once"
-                    hint="Requests in flight together. Higher hits the server harder."
+                    hint="Requests in flight"
                     value={s.concurrency}
                     onChange={set("concurrency")}
                     error={errors.concurrency}
                   />
                 </Group>
 
-                <Group title="Traps the server must survive">
+                <Group title="Traps">
                   <NumberRow
                     label="Hot-seat storm"
-                    hint={`Users who all rush A12 and ${hotSeats - 1} seats near it. Only ${hotSeats} can win.`}
+                    hint={`All rush A12 and ${hotSeats - 1} nearby`}
                     suffix="users"
                     value={s.hotUsers}
                     onChange={set("hotUsers")}
@@ -788,7 +740,7 @@ export function StampedePage() {
                   />
                   <NumberRow
                     label="Same-key retries"
-                    hint={`Share of requests sent ${retryCopies}× at once with one idempotency key, like a double tap. Each must book once.`}
+                    hint={`Sent ${retryCopies}× with one key`}
                     suffix="%"
                     value={s.retryPct}
                     onChange={set("retryPct")}
@@ -796,7 +748,7 @@ export function StampedePage() {
                   />
                   <NumberRow
                     label="Spoofed user_id"
-                    hint="Share of requests that name someone else in the body. The booking must go to the sender."
+                    hint="Claim to be someone else"
                     suffix="%"
                     value={s.spoofPct}
                     onChange={set("spoofPct")}
@@ -804,7 +756,7 @@ export function StampedePage() {
                   />
                   <NumberRow
                     label="Over-limit users"
-                    hint={`Users who each try ${limitParallel} seats at once. Exactly ${perUserLimit} must succeed.`}
+                    hint={`Each tries ${limitParallel}, limit ${perUserLimit}`}
                     suffix="users"
                     value={s.overLimitUsers}
                     onChange={set("overLimitUsers")}
@@ -814,16 +766,13 @@ export function StampedePage() {
                     checked={s.edgeCases}
                     onChange={set("edgeCases")}
                     label="Edge cases"
-                    hint="Crossed seat pairs, a reused key, cancelling someone else's booking."
+                    hint="Crossed pairs, key reuse, foreign cancels"
                   />
-                </Group>
-
-                <Group title="Cross-check">
                   <Switch
                     checked={s.metrics}
                     onChange={set("metrics")}
                     label="Compare with /metrics"
-                    hint="Checks the server's own counters agree with what this browser saw. Turn off if someone else is booking on this instance right now."
+                    hint="Off if others are booking here"
                   />
                 </Group>
               </div>
