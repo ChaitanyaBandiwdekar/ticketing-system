@@ -157,3 +157,38 @@ Production still runs Node 22 in Docker.
 - Alert rules are validated with `promtool check config` in CI. Exact-match `promtool test rules` was dropped as brittle against templated annotations.
 
 **Human:** said to continue with the next phase after deploying.
+
+## Phase 7 follow-up: Lightweight Charts
+
+**Human:** asked for the War Room charts to use TradingView Lightweight Charts, and said the previous session had been cut off: check completeness and continue.
+
+**AI implemented:** a completeness check (everything through Phase 7 was committed and pushed; Phase 8 had not started), then the chart swap. It kept `TimeChart`'s props, so the page barely changed, and moved the per-second slot building into a tested module. It lazy-loaded the War Room route to keep the library out of the main bundle, and checked the result in Chromium under load at desktop and phone widths.
+
+**Decisions made during the phase:**
+
+- Missing seconds are whitespace slots, because the library spaces bars by index: that keeps x proportional to time and breaks lines across gaps.
+- Theme tokens are OKLCH and canvas needs concrete colors, so each one is resolved by painting a pixel.
+- Scroll and zoom are off on a live window, so phones can scroll the page past the charts.
+- One credit link on the page meets the Apache-2.0 NOTICE. The library's logo inside every plot covered data.
+
+## Phase 8: Burst + Stampede + tuning
+
+**AI implemented:**
+
+- one burst engine shared by the CLI and the browser simulator, its tests (including a rule-breaking fake server that must fail the right checks), the simulator page, `burst.sh`, the Makefile and the CI throttled-burst job;
+- a tuning pass with the server in a 0.1 CPU / 512 MB cgroup: CPU per request read from `cpuacct`, a V8 CPU profile, a logger micro-benchmark, RSS sampling at 2,000 and 4,000 in flight, and an overload run with a small admission cap;
+- each server fix got a test that fails without it, where one was practical (the deadline race uses a real socket and a blocked loop).
+
+**Decisions made during the phase:**
+
+- Each exact scenario gets its own seats and users, so a result can be checked to the request ("limit": exactly 4 of 10), not just "no 5xx".
+- Retries follow the API's own contract (same key, honor `Retry-After`, 503 included). A replay after a failed attempt is that attempt's booking: without that, the burst reported seats "sold but never granted" that had in fact committed.
+- Tuning was driven by measurements, not guesses:
+  - the A/B on logging level was noisy in wall-clock time, so CPU per request became the measure;
+  - the profile's 27% in socket writes was judged a sandbox syscall artifact and not chased;
+  - the GC share was real (16 MB semi-space, −35% CPU);
+  - logging measured at ~9 µs a line, so the per-request line stays.
+- Two failure modes surfaced only under overload, both fixed at the root: a 1s `Retry-After` that invited a retry storm, and a deadline timer that could beat an already-arrived DB reply on a saturated loop.
+- `MAX_QUEUE` was lowered to 8,000 from a measured ~17.5 KB per request in flight.
+
+**Human:** asked for the chart library and for the interrupted work to be continued.
