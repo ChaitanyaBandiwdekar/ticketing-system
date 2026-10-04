@@ -46,14 +46,15 @@ describe("POST /shows/:id/reserve", () => {
     ]);
   });
 
-  it("replays a retry: 200, same body, Idempotent-Replayed header, no second booking", async () => {
+  it("replays a retry: the original 201 and body, Idempotent-Replayed header, no second booking", async () => {
     const show = await t.show();
     const { headers } = await t.user();
     const first = await reserve(show.id, headers, { seats: ["A1"] }, "retry-1");
     const again = await reserve(show.id, headers, { seats: ["A1"] }, "retry-1");
 
     expect(first.statusCode).toBe(201);
-    expect(again.statusCode).toBe(200);
+    expect(first.headers["idempotent-replayed"]).toBeUndefined();
+    expect(again.statusCode).toBe(201);
     expect(again.headers["idempotent-replayed"]).toBe("true");
     expect(again.json()).toEqual(first.json());
     const snap = await t.app.inject({ url: `/shows/${show.id}` });
@@ -79,12 +80,12 @@ describe("POST /shows/:id/reserve", () => {
     expect(errorOf(res).message).toMatch(/Idempotency-Key/);
   });
 
-  it("422 when a key is reused for a different request", async () => {
+  it("409 when a key is reused for a different request", async () => {
     const show = await t.show();
     const { headers } = await t.user();
     await reserve(show.id, headers, { seats: ["A1"] }, "k");
     const res = await reserve(show.id, headers, { seats: ["A2"] }, "k");
-    expect(res.statusCode).toBe(422);
+    expect(res.statusCode).toBe(409);
     expect(errorOf(res).code).toBe("idempotency_key_reused");
   });
 

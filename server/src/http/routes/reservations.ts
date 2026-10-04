@@ -41,8 +41,10 @@ function sendReserveOutcome(request: FastifyRequest, reply: FastifyReply, o: Res
   switch (o.outcome) {
     case "created":
       return reply.code(201).send(o.reservation);
+    // A retry gets the original response back (201, the same reservation); the header tells a
+    // client that wants to know that nothing new was booked.
     case "replayed":
-      return reply.code(200).header(REPLAY_HEADER, "true").send(o.reservation);
+      return reply.code(201).header(REPLAY_HEADER, "true").send(o.reservation);
     case "seat_taken":
       return sendError(
         request,
@@ -70,7 +72,7 @@ function sendReserveOutcome(request: FastifyRequest, reply: FastifyReply, o: Res
         request,
         reply,
         new ApiError(
-          422,
+          409,
           "idempotency_key_reused",
           "this Idempotency-Key was already used for a different request",
         ),
@@ -135,7 +137,7 @@ export const reservationRoutes =
     const authenticate = async (request: FastifyRequest) => {
       request.userId = ctx.auth.userFrom(request);
     };
-    const replyBody = { 200: reservationSchema, 201: reservationSchema };
+    const replyBody = { 201: reservationSchema };
 
     app.post<{ Params: { id: string }; Body: ReserveBody }>(
       "/shows/:id/reserve",

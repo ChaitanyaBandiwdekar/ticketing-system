@@ -27,10 +27,15 @@ async function scrape(app: FastifyInstance): Promise<Scrape> {
 const delta = (before: Scrape, after: Scrape, key: string) =>
   (after.get(key) ?? 0) - (before.get(key) ?? 0);
 
-/** What a client observed: created / replayed for 2xx, otherwise the error code. */
-function observedOutcome(res: { statusCode: number; json: () => unknown }): string {
-  if (res.statusCode === 201) return "created";
-  if (res.statusCode === 200) return "replayed";
+/** What a client observed: created / replayed (the 201's header), otherwise the error code. */
+function observedOutcome(res: {
+  statusCode: number;
+  headers: Record<string, unknown>;
+  json: () => unknown;
+}): string {
+  if (res.statusCode === 201) {
+    return res.headers["idempotent-replayed"] === "true" ? "replayed" : "created";
+  }
   return (res.json() as { error: { code: string } }).error.code;
 }
 

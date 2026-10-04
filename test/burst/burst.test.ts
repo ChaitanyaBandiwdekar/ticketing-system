@@ -145,7 +145,7 @@ describe("burst against a server that breaks the rules", () => {
       "final map matches what was granted",
       "hot: one winner per hot seat",
       "same key: one booking, the rest replay it",
-      "key reuse: 422, then the original replays",
+      "key reuse: 409, then the original replays",
       "limit: exactly 4 of 10 parallel",
       "crossed pairs: one winner, no deadlock",
       "spoofed user_id ignored",

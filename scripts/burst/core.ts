@@ -444,12 +444,13 @@ export async function runBurst(
         body = text;
       }
       const code = (body as { error?: { code?: string } } | null)?.error?.code;
+      // A replay is the original 201, told apart only by its header.
       const outcome =
         res.status === 201
-          ? "created"
-          : res.status === 200
+          ? res.headers.get("idempotent-replayed") === "true"
             ? "replayed"
-            : (code ?? `http_${res.status}`);
+            : "created"
+          : (code ?? `http_${res.status}`);
       const retryAfter = Number(res.headers.get("retry-after")) || 0;
       return { status: res.status, outcome, body, ms, requestId, retryAfter };
     } catch (err) {
@@ -600,7 +601,8 @@ export async function runBurst(
     if (won) granted.push({ ...(r.body as Reservation), scenario: s });
     return r;
   };
-  const isWin = (r: Resp) => r.status === 201 || (r.status === 200 && r.afterFailure === true);
+  const isWin = (r: Resp) =>
+    r.outcome === "created" || (r.outcome === "replayed" && r.afterFailure === true);
   const idOf = (r: Resp) => (r.body as Reservation | null)?.reservation_id;
 
   const tasks: (() => Promise<void>)[] = [];
@@ -636,8 +638,8 @@ export async function runBurst(
       const rs = await Promise.all(
         Array.from({ length: o.retryCopies }, () => reserve("retry", u, want, k)),
       );
-      const ids = new Set(rs.filter((r) => r.status === 201 || r.status === 200).map(idOf));
-      const createdN = rs.filter((r) => r.status === 201).length;
+      const ids = new Set(rs.filter((r) => r.status === 201).map(idOf));
+      const createdN = rs.filter((r) => r.outcome === "created").length;
       const declined = rs.filter((r) => r.status === 409).length;
       if (createdN > 1) fail("retry", `key ${k}: ${createdN} copies created`);
       if (ids.size > 1)
@@ -648,7 +650,7 @@ export async function runBurst(
     });
   }
 
-  // One key, different seats: refused (422); the original seats again: the same reservation.
+  // One key, different seats: refused (409); the original seats again: the same reservation.
   for (const u of takeUsers(o.keyReuseGroups)) {
     const [x, y] = takeSeats(2) as [string, string];
     tasks.push(async () => {
@@ -665,7 +667,7 @@ export async function runBurst(
         );
       }
       const again = await reserve("keyreuse", u, [x], k);
-      if (again.status !== 200 || idOf(again) !== idOf(first)) {
+      if (again.outcome !== "replayed" || idOf(again) !== idOf(first)) {
         fail(
           "keyreuse",
           `${u.id}: same key, same seat → ${again.outcome}, not a replay of the original`,
@@ -968,7 +970,7 @@ export async function runBurst(
   );
   const exactScenarios: [Scenario, string, number][] = [
     ["retry", "same key: one booking, the rest replay it", o.retryGroups],
-    ["keyreuse", "key reuse: 422, then the original replays", o.keyReuseGroups],
+    ["keyreuse", "key reuse: 409, then the original replays", o.keyReuseGroups],
     ["limit", `limit: exactly ${o.perUserLimit} of ${o.limitParallel} parallel`, o.limitUsers],
     ["crossed", "crossed pairs: one winner, no deadlock", o.crossedPairs],
     ["spoof", "spoofed user_id ignored", o.spoofs],

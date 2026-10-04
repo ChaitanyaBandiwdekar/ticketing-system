@@ -39,9 +39,16 @@ RID="$(jq -r .reservation_id "$TMP")"
 [[ "$(jq -r .user_id "$TMP")" == "smoke-alice" ]] || fail "spoofed user_id was honoured"
 [[ "$(jq -r .amount_paise "$TMP")" == "15000" ]] || fail "wrong amount"
 
-call POST "/shows/$SHOW/reserve" 200 -H "authorization: Bearer $ALICE" -H "idempotency-key: $KEY" \
-  -H 'content-type: application/json' -d '{"seats":["A1"]}'
+# A replay is the original 201 again, marked by its header.
+call POST "/shows/$SHOW/reserve" 201 -H "authorization: Bearer $ALICE" -H "idempotency-key: $KEY" \
+  -H 'content-type: application/json' -d '{"seats":["A1"]}' -D "$TMP.headers"
 [[ "$(jq -r .reservation_id "$TMP")" == "$RID" ]] || fail "replay returned a different reservation"
+grep -qi '^idempotent-replayed: true' "$TMP.headers" || fail "replay without Idempotent-Replayed"
+rm -f "$TMP.headers"
+
+call POST "/shows/$SHOW/reserve" 409 -H "authorization: Bearer $ALICE" -H "idempotency-key: $KEY" \
+  -H 'content-type: application/json' -d '{"seats":["A2"]}'
+[[ "$(jq -r .error.code "$TMP")" == "idempotency_key_reused" ]] || fail "expected idempotency_key_reused"
 
 call POST "/shows/$SHOW/reserve" 409 -H "authorization: Bearer $BOB" -H "idempotency-key: $KEY-bob" \
   -H 'content-type: application/json' -d '{"seats":["A1","A2"]}'
