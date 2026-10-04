@@ -111,3 +111,19 @@ Production still runs Node 22 in Docker.
 - The missing `web/` copy in the Docker build stage was caught by reviewing the build against the Dockerfile; there is no Docker on the dev machine.
 
 **Human:** started the phase with "continue". After a session break, asked for the Phase 5 tests (layout validation, static serving, the pure hall modules), and then for the AI to recheck whether the UI check had already been done and carry on.
+
+## Phase 6: UI II (live hall)
+
+**AI implemented:** the stream reducer, `useLiveShow`, canvas interaction (pointer, keyboard, glow), the booking flow with idempotent retries, the server-clock estimate, the hold countdown, My bookings (per show and `/bookings`), per-tab sessions, and all tests. No subagents were used. The visual check ran in the built-in browser pane against the production bundle, with two tabs signed in as two users.
+
+**Decisions made during the phase:**
+
+- The live map is a pure reducer over stream frames, mapped by label onto the hall's order. A REST read seeds it and stands in while the stream is down, but can never overwrite a live stream.
+- One idempotency key per reserve attempt (per seat set), reused across automatic retries and the manual "Try again", so any retry can only replay.
+- Hold countdowns run on the server's clock, estimated from `Date` headers, because `expires_at` is stamped by the database.
+- Picked seats that someone else takes are dropped from the pick as soon as the stream shows it, before any request.
+- Sessions are per tab, so one browser can hold two users for the race demo.
+- An integration test folds the real server's frames through the UI reducer, to catch protocol drift between `hub.ts` and the UI.
+- Fixed from the visual pass: the keyboard focus ring showing on mouse clicks; the header overflowing on tablets and phones; a stale "held" notice after the hold lapsed; phone notices rendering out of sight.
+
+**Human:** said to check status and continue with the next phase while they get the Supabase and Render credentials (Phase 3b stays blocked).

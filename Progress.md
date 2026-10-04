@@ -11,7 +11,7 @@ Phase-by-phase tracker for [`Plan.md`](Plan.md). Every phase ends with its check
 | 3b    | Smoke deploy (Render free + Supabase)   | ⏸ blocked: needs credentials |
 | 4     | Realtime layer (SSE, jobs)              | ✅ done                      |
 | 5     | UI I: shell + shows                     | ✅ done                      |
-| 6     | UI II: live hall                        | ⬜ not started               |
+| 6     | UI II: live hall                        | ✅ done                      |
 | 7     | Observability + War Room                | ⬜ not started               |
 | 8     | Burst CLI + Stampede simulator + tuning | ⬜ not started               |
 | 9     | Final deploy + docs                     | ⬜ not started               |
@@ -329,3 +329,83 @@ The Phase 3 push failed CI's compose job, and the first fix revealed a second fa
 - **Phase 3b** still needs the Supabase project (Singapore) and the pooler URLs/password, plus a Render account connected to the repo.
 
 **Commits:** see `git log`. Phase 5 is a feature commit and a docs commit.
+
+---
+
+## Phase 6: UI II (live hall) ✅
+
+**Deliverables**
+
+- [x] `web/src/hall/live.ts`: the live seat map as a pure reducer over `/stream` frames.
+  - Snapshots replace the map; deltas overwrite only the seats they list, in arrival order (the server's convergence argument).
+  - Frames are laid onto the hall's own seat order by label, so a frame in any order still lands correctly.
+  - A REST read seeds the first paint and stands in while the stream is down, but a late REST response never overwrites a live stream.
+  - Changed seats get a fading glow (off under `prefers-reduced-motion`). `assume` paints our own just-reserved seats before the delta lands.
+- [x] `web/src/hall/useLiveShow.ts`: drives the reducer from `EventSource`.
+  - The browser reconnects a dropped stream by itself (the server sends `retry: 2000`). When the server refuses a stream (503 at capacity, a deploy), the hook reopens it with backoff.
+  - While the stream is down, the show's REST read polls every 5s. A `gone` frame ends the stream and the page shows "No such show".
+  - The header shows the link state (Live / Connecting / Reconnecting / Show removed) and the reconciler's latest audit verdict ("audited 3s ago").
+- [x] Interactive canvas (`HallCanvas`):
+  - click and tap to pick; hover tooltips ("E9 · available · ₹250");
+  - keyboard: arrow keys move across aisles and cross-aisles (`neighbor()` in `geometry.ts`), Enter or Space picks, Esc clears, with a polite live region;
+  - the focus ring follows `:focus-visible`, so it shows for the keyboard only;
+  - a minimum seat pitch, so a wide hall on a phone scrolls sideways instead of shrinking past tappable;
+  - the glow animation runs only while a glow is visible.
+- [x] Booking (`pages/ShowPage.tsx`, `lib/booking.ts`):
+  - **Idempotent reserve.** The client generates an `Idempotency-Key` per attempt and reuses it for every retry of the same seat set. Transient failures (network, 429, 502–504) are retried up to 4 tries, honouring `Retry-After`. "Try again" after that still reuses the key, so a retry can only replay. A 200 replay says so.
+  - **Picked seats taken live.** If someone else takes a seat you picked, the stream shows it before you send anything: "F8 just went", and you keep the rest.
+  - **409 `seat_taken`.** "G8 was just taken. Keep F7?" with a one-click rebook.
+  - **409 `per_user_limit`** shows the numbers. Picking past your limit is stopped before any request, counting the seats you already hold.
+  - **401.** The session is dropped and you are asked to sign in again.
+  - **Instant mode** confirms on the spot. **Hold mode** shows a countdown against the server's clock (estimated from response `Date` headers, `lib/clock.ts`) with Confirm / Release. When the hold lapses on screen, the card turns Expired and the sweeper's delta frees the seats.
+  - On phones, a sticky bottom bar holds the pick and the book button. The result notice scrolls into view, and the limit hint shows in the bar.
+- [x] My bookings:
+  - on the show page, your bookings for that show;
+  - `/bookings` lists all your bookings grouped by show;
+  - each card: status, hold countdown, confirm/release, and cancel behind a second click.
+  - Confirm and cancel retry transient failures, since both are idempotent on the server.
+- [x] **Per-tab sessions** (`lib/session.tsx`): each tab keeps its own session in sessionStorage. localStorage holds the last sign-in as the default for new tabs. So two tabs can be two people racing for one seat.
+- [x] The header fits phones: the wordmark collapses to its logo under 420px, and the nav reads "Bookings" there.
+- [x] README: a short section on the UI and the two-tab race.
+
+**Verification**
+
+- `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅ · `npm run build` ✅
+- `npm test` ✅: 22 files, 266 tests (+21)
+  - **Reducer (9)**, `test/web/live.test.ts`:
+    - remap and changes;
+    - snapshot then deltas; a REST seed vs a live stream, including a late REST response; an early delta;
+    - flashes (pruning, resync differences, off); `assume`; audit and link states;
+    - fast-check: any snapshot plus delta sequence, in any label order, equals a plain label → code model.
+  - **Keyboard movement (4):** across aisles, ends of rows, cross-aisles, centred short rows, and every seat in a generated hall reachable from the first.
+  - **Booking retries (5):** what counts as transient, `Retry-After` vs jittered backoff, retry then success, give-up after the last try, no retry on a 409.
+  - **Clock (2):** skew adopted from `Date` headers, noise and garbage ignored; countdown format.
+  - **UI reducer over the real stream** (`test/realtime/ui-live.test.ts`): 16 users run reserve / confirm / cancel / lapse rounds against a 1s-hold show with the sweeper. The UI reducer folds the stream's actual frames, into a hall order reversed on purpose, and lands exactly on the database's seat map. This guards against protocol drift between `hub.ts` and the UI.
+- **Visual check** in the browser pane: the production bundle on `:18080` against the embedded dev Postgres, at 1280×860 and 375×812.
+  - priya booked E7+E8; seats flipped to "Yours", counts reconciled, and the booking card appeared.
+  - **Two tabs, two users:**
+    - arjun picked F7+F8; priya booked F8 in the other tab. Arjun's tab dropped F8 at once ("F8 just went") and kept F7.
+    - arjun picked G8 while a third user took it through the API in the same tick as arjun's click. The server answered 409, and the panel showed "G8 was just taken. Keep F7?".
+  - Hold flow on a 90s show: countdown, then confirm. On a 10s show, the hold lapsed on screen: the card turned Expired, the seat came free through the sweeper's delta, and the quota came back.
+  - Keyboard picking (arrows, then Enter) with the focus tooltip; two-step cancel on `/bookings`.
+  - Mobile: the sticky bar, the limit hint, and the result notice scrolling into view.
+  - `GET /shows/:id/audit` stayed `ok` on all three shows, and the server logged no errors.
+
+**Fixed while testing**
+
+- A mouse click focused the canvas and drew the keyboard focus ring on A1. The ring now follows `:focus-visible` (or a key press).
+- The header wrapped at ~780px ("My bookings", "Signed in as …" broke across lines), and at 375px it pushed "Sign out" off-screen.
+- The "Held B3, confirm within 10 seconds" notice outlived the hold. It now disappears once that hold is confirmed, released or lapses.
+- On phones, the booking result and the limit message rendered below the map, out of sight. The result now scrolls into view and the limit hint shows in the bar.
+
+**Deviations from plan**
+
+- The session moved from localStorage-only to per tab (sessionStorage, with localStorage as the default for new tabs). This makes the plan's two-tab race possible in one browser.
+- Picking seats someone else just took is handled before any request (the stream says so first). The server's 409 path remains for genuinely simultaneous requests.
+- `@fastify/static` lists the build's files at startup (`wildcard: false`), so a rebuilt UI needs a server restart. That is fine for a deploy, which ships a fixed build. Noted for local work.
+
+**Open items / needs you**
+
+- **Phase 3b** still needs the Supabase project (Singapore) and the pooler URLs/password, plus a Render account connected to the repo.
+
+**Commits:** see `git log`. Phase 6 is a feature commit and a docs commit.

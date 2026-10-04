@@ -353,6 +353,8 @@ Real values live only in `.env` (gitignored) and in Render (`sync:false`). You p
 - Canvas seat map with live SSE updates and animations.
 - Reserve → hold countdown → confirm/cancel; 409 UX; My bookings.
 
+- Sessions are per tab (sessionStorage, with the last sign-in as the default for new tabs), so two tabs in one browser can be two users.
+
 ✔ Two tabs as different users racing for one seat; visual pass.
 
 **Phase 7: Observability + War Room.**
