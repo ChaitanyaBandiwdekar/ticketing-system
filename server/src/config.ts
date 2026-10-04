@@ -28,7 +28,9 @@ const EnvSchema = z.object({
   DEFAULT_PER_USER_LIMIT: intWithDefault(4, 1, 100),
   MAX_SEATS_PER_SHOW: intWithDefault(20_000, 1, 200_000),
   HOLD_SWEEP_INTERVAL_MS: intWithDefault(1_000, 100, 60_000),
-  MAX_QUEUE: intWithDefault(20_000, 1, 1_000_000),
+  // ~17.5 KB of RSS per request in flight (measured at 4,000 in flight under 0.1 CPU/512 MB):
+  // 8,000 keeps the worst case near 250 MB, well inside a 512 MB instance.
+  MAX_QUEUE: intWithDefault(8_000, 1, 1_000_000),
   SNAPSHOT_CACHE_MS: intWithDefault(250, 0, 10_000),
   WEB_DIST_DIR: z.string().min(1).default("dist/web"),
 

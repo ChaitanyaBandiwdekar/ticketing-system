@@ -22,10 +22,20 @@ export class DbDeadlineError extends Error {
 
 export function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
+  let check: NodeJS.Immediate | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new DbDeadlineError(ms)), ms);
+    // When the timer fires, the answer may already be sitting in the socket: a saturated event
+    // loop (0.1 CPU under a stampede) runs due timers BEFORE it polls I/O. Deciding one turn
+    // later, after the poll phase, never turns an answered query into a 503 (found by the
+    // Phase 8 overload burst). A truly silent database still fails, one loop turn later.
+    timer = setTimeout(() => {
+      check = setImmediate(() => reject(new DbDeadlineError(ms)));
+    }, ms);
   });
   // The abandoned work may still reject later; observe it so that's never an unhandled rejection.
   work.catch(() => {});
-  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+  return Promise.race([work, deadline]).finally(() => {
+    clearTimeout(timer);
+    clearImmediate(check);
+  });
 }

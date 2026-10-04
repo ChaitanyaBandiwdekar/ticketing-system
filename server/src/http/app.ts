@@ -183,9 +183,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         "overloaded",
         "server is at capacity; retry shortly",
         {},
-        {
-          "retry-after": "1",
-        },
+        { "retry-after": String(ctx.admission.retryAfterSeconds()) },
       );
     }
     // "close" fires exactly once whether the response finished or the client went away.
