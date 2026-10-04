@@ -294,3 +294,15 @@ After the first live 20k-scale burst (21,600 requests, PASS), the War Room had t
   - the human's 201-replay decision.
 - Removed "the chart library" from the human-decided list, since that library is gone.
 - Brought `Plan.md`'s contract up to date: replay 201, key reuse 409, keyless reserves, SVG charts. Added this log's entries for the work after the evaluator audit.
+
+### The burst as one file
+
+**Human:** asked what evaluators can use besides the Stampede page, and whether they can download the burst script and run it without cloning. Chose a single prebuilt file. The human will give the admin key to the evaluators.
+
+**AI:**
+
+- Found that `burst.sh` can't run on its own: it is a bash wrapper around `npm ci` and `npm run burst` in a clone. The two TypeScript files did run outside the repo, but only through `npx tsx` and with a `package.json` setting `"type": "module"` next to them.
+- Added `npm run build:burst`: esbuild bundles `burst.ts` and `core.ts` into `scripts/burst/burst.mjs`, a 35 KB file that needs only Node's built-in modules. It is committed so it can be downloaded from GitHub's raw view.
+- Added a CI step that rebuilds the file and fails if it differs from the committed one, so it can't drift from its source.
+- Ran the file alone from an empty folder against a local server on Postgres: `--small` (2,320 requests) and the full run (21,550 requests). Both passed every check, and `/metrics` agreed on every outcome.
+- Rewrote the README's burst section around three ways to run it: the one file, a clone, and the browser.

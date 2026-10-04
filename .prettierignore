@@ -4,3 +4,4 @@ web/dist
 coverage
 .pg
 package-lock.json
+scripts/burst/burst.mjs

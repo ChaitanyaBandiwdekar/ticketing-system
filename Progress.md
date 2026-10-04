@@ -638,6 +638,7 @@ The previous session ended after Phase 7's commits; nothing of Phase 8 had been 
   - Verified: typecheck, lint, 29 files / **326 tests** (+3 for runs); two local bursts (PASS) against the built bundle on an embedded Postgres; screenshots at 1280 px and 375 px (no horizontal scroll).
 - [x] Live 20k-scale burst against the public URL: 21,600 requests, PASS (run by the human with the live admin key).
 - [x] **Alignment pass** against the assignment (see `docs/ai-log.md`): `POST /shows` now returns every seat (`seats[{label,status}]`, all available), as the assignment says; `WRITEUP.md`, `Plan.md`, the README and the AI log were brought in line with the code. 29 files, **330 tests** passed.
+- [x] **One-file burst:** `scripts/burst/burst.mjs`, built by `npm run build:burst` and checked against its source in CI. Downloaded alone, `node burst.mjs <URL> --admin-key <key>` runs the full burst with no clone or install. Verified from an empty folder against a local server: `--small` and 21,550 requests, both PASS.
 - [ ] Capture a live burst's report and War Room screenshots into `docs/`.
 
 **Verification so far**

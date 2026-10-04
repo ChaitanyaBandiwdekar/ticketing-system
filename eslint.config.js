@@ -4,7 +4,17 @@ import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 
 export default defineConfig(
-  { ignores: ["node_modules/", "dist/", "web/dist/", "coverage/", ".pg/"] },
+  {
+    // scripts/burst/burst.mjs is generated (npm run build:burst); CI checks it matches its source.
+    ignores: [
+      "node_modules/",
+      "dist/",
+      "web/dist/",
+      "coverage/",
+      ".pg/",
+      "scripts/burst/burst.mjs",
+    ],
+  },
   js.configs.recommended,
   tseslint.configs.recommended,
   {
