@@ -9,6 +9,7 @@ import type {
   Show,
   ShowLayout,
 } from "../../../server/src/engine/types";
+import { noteServerDate } from "./clock";
 
 export type { Reservation, SeatCounts, SeatStatus, Show, ShowLayout };
 export type ShowSummary = Show & { counts: SeatCounts };
@@ -58,6 +59,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
     throw new ApiError(0, "network_error", "Can't reach the server. Check your connection.", null);
   }
 
+  noteServerDate(res.headers.get("date"));
   const requestId = res.headers.get("x-request-id");
   const text = await res.text();
   let json: unknown = null;

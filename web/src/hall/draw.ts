@@ -9,9 +9,10 @@
  *   yours     solid cobalt (+ a check when large enough); your hold is half-filled cobalt
  *   selected  thick cobalt ring + centre dot
  */
+import type { SeatCode } from "./codes";
 import type { HallGeometry } from "./geometry";
 
-export type SeatCode = "a" | "h" | "c";
+export type { SeatCode };
 
 export type HallPaint = {
   /** One char per seat in seat order: a=available h=held c=confirmed. */
@@ -84,7 +85,8 @@ export function measure(
     seat,
     gutter,
     padY,
-    cssWidth,
+    // At the minimum pitch a wide hall can outgrow the container; the canvas then scrolls.
+    cssWidth: Math.max(cssWidth, Math.ceil(geo.width * pitch + 2 * gutter)),
     cssHeight: Math.ceil(geo.height * pitch + padY * 2),
     showRowLabels,
   };

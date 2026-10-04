@@ -44,6 +44,12 @@ docker compose up --build -d
 scripts/smoke.sh http://localhost:8080 local-dev-admin-key
 ```
 
+### The UI
+
+The same process serves the UI at `/app/` (`/` redirects there). Open a show for its **live hall**: seats change colour as they are taken, through server-sent events (`GET /stream`), with no polling. Sign in with any username, pick seats on the map (mouse, touch or keyboard) and book them. In a hold-mode show a countdown runs until you confirm. Each reserve carries a client-generated `Idempotency-Key`, and retries after a timeout or a 503 reuse it, so a retry can't double-book.
+
+The sign-in is per tab: open a second tab, sign in there as someone else, and race yourself for one seat. The loser's tab drops the seat the moment the winner gets it, or shows "A12 was just taken; keep A13?" if both requests were already in flight.
+
 ## API
 
 The paths are exactly the spec's. Every error has the shape `{"error": {"code", "message", "request_id", ...}}`, and every response echoes `x-request-id`.

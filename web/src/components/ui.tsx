@@ -270,7 +270,7 @@ export function Notice({
   children,
   action,
 }: {
-  tone?: "danger" | "amber" | "neutral";
+  tone?: "danger" | "amber" | "neutral" | "success";
   title: string;
   children?: ReactNode;
   action?: ReactNode;
@@ -279,6 +279,7 @@ export function Notice({
     danger: "border-danger/40 bg-danger-soft",
     amber: "border-amber/40 bg-amber-soft",
     neutral: "border-line bg-surface",
+    success: "border-success/40 bg-success-soft",
   }[tone];
   return (
     <div

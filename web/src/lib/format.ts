@@ -48,3 +48,9 @@ export function holdMode(holdTtlSeconds: number | null): string {
   if (holdTtlSeconds % 60 === 0) return `Hold ${holdTtlSeconds / 60} min`;
   return `Hold ${holdTtlSeconds}s`;
 }
+
+/** A countdown: 272_000 -> "4:32", 7_400 -> "0:08" (rounded up, so 0:00 means it's over). */
+export function clock(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}

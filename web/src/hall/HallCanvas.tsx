@@ -1,29 +1,71 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+} from "react";
 import { cx } from "../components/ui";
-import { measure, paintHall, readHallColors, type HallMetrics, type HallPaint } from "./draw";
+import {
+  FLASH_MS,
+  measure,
+  paintHall,
+  readHallColors,
+  seatAt,
+  type HallMetrics,
+  type HallPaint,
+} from "./draw";
 import type { HallGeometry } from "./geometry";
+
+/** Pointer and keyboard wiring for a hall people pick seats on. */
+export type HallInteraction = {
+  onSeatClick(index: number): void;
+  onSeatHover(index: number | null): void;
+  /** Whether clicking this seat does anything (drives the cursor). */
+  clickable(index: number): boolean;
+  onKeyDown(e: KeyboardEvent<HTMLCanvasElement>): void;
+  onFocus?(e: FocusEvent<HTMLCanvasElement>): void;
+  onBlur?(): void;
+  /** Id of the element explaining the keyboard controls. */
+  describedBy?: string;
+};
 
 type Props = {
   geometry: HallGeometry;
   paint: HallPaint;
   /** Upper bound on seat pitch (CSS px) so small halls don't balloon. */
   maxPitch?: number;
+  /** Lower bound on seat pitch; a hall wider than its container then scrolls sideways. */
+  minPitch?: number;
   /** Accessible summary of what the map shows. */
   label: string;
   className?: string;
   /** Called with the metrics after each layout (interactive layers hit-test with them). */
   onMetrics?: (m: HallMetrics) => void;
+  interaction?: HallInteraction;
   children?: ReactNode;
 };
+
+function hasLiveFlash(paint: HallPaint, now: number): boolean {
+  if (!paint.flashes) return false;
+  for (const at of paint.flashes.values()) if (now - at < FLASH_MS) return true;
+  return false;
+}
 
 /** The hall drawn on a DPR-aware canvas that fits its container's width. */
 export function HallCanvas({
   geometry,
   paint,
   maxPitch,
+  minPitch,
   label,
   className,
   onMetrics,
+  interaction,
   children,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -40,8 +82,8 @@ export function HallCanvas({
   }, []);
 
   const metrics = useMemo(
-    () => (width > 0 ? measure(geometry, width, { maxPitch }) : null),
-    [geometry, width, maxPitch],
+    () => (width > 0 ? measure(geometry, width, { maxPitch, minPitch }) : null),
+    [geometry, width, maxPitch, minPitch],
   );
   const colors = useMemo(() => readHallColors(), []);
 
@@ -62,8 +104,24 @@ export function HallCanvas({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    paintHall(ctx, geometry, metrics, paint, colors);
+    const draw = (now: number) => paintHall(ctx, geometry, metrics, { ...paint, now }, colors);
+    draw(performance.now());
+    // Changed seats glow and fade; animate only while a glow is still visible.
+    let frame = 0;
+    const tick = (now: number) => {
+      draw(now);
+      if (hasLiveFlash(paint, now)) frame = requestAnimationFrame(tick);
+    };
+    if (hasLiveFlash(paint, performance.now())) frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
   }, [geometry, metrics, paint, colors]);
+
+  const seatFromEvent = (e: PointerEvent<HTMLCanvasElement>): number | null => {
+    if (!metrics) return null;
+    const rect = e.currentTarget.getBoundingClientRect();
+    return seatAt(geometry, metrics, e.clientX - rect.left, e.clientY - rect.top);
+  };
+  const [pointerClickable, setPointerClickable] = useState(false);
 
   return (
     <div ref={wrapRef} className={cx("relative w-full", className)}>
@@ -71,8 +129,40 @@ export function HallCanvas({
         ref={canvasRef}
         role="img"
         aria-label={label}
+        aria-describedby={interaction?.describedBy}
+        tabIndex={interaction ? 0 : undefined}
         style={{ width: metrics?.cssWidth ?? "100%", height: metrics?.cssHeight ?? 0 }}
-        className="block"
+        className={cx(
+          "block touch-manipulation rounded-sm",
+          interaction && pointerClickable && "cursor-pointer",
+        )}
+        onPointerMove={
+          interaction &&
+          ((e) => {
+            const i = seatFromEvent(e);
+            setPointerClickable(i !== null && interaction.clickable(i));
+            if (e.pointerType === "mouse") interaction.onSeatHover(i);
+          })
+        }
+        onPointerLeave={
+          interaction &&
+          (() => {
+            setPointerClickable(false);
+            interaction.onSeatHover(null);
+          })
+        }
+        onClick={
+          interaction &&
+          ((e) => {
+            if (!metrics) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const i = seatAt(geometry, metrics, e.clientX - rect.left, e.clientY - rect.top);
+            if (i !== null) interaction.onSeatClick(i);
+          })
+        }
+        onKeyDown={interaction?.onKeyDown}
+        onFocus={interaction?.onFocus}
+        onBlur={interaction?.onBlur}
       />
       {children}
     </div>
@@ -146,7 +236,17 @@ export function HallLegend({ showMine = false }: { showMine?: boolean }) {
         "Held",
       )}
       {item(<span className={cx(box, "bg-seat-sold")} />, "Sold")}
-      {showMine && item(<span className={cx(box, "bg-seat-mine")} />, "Yours")}
+      {showMine && (
+        <>
+          {item(
+            <span className={cx(box, "relative border-[2.5px] border-seat-mine")}>
+              <span className="absolute inset-0 m-auto size-1 rounded-full bg-seat-mine" />
+            </span>,
+            "Your pick",
+          )}
+          {item(<span className={cx(box, "bg-seat-mine")} />, "Yours")}
+        </>
+      )}
     </ul>
   );
 }

@@ -29,7 +29,8 @@ export function Wordmark() {
         </g>
         <rect x="13.5" y="22" width="5" height="4.5" rx="1.2" className="fill-amber" />
       </svg>
-      <span className="flex items-baseline gap-2">
+      {/* The name yields to the nav on the narrowest phones; the link keeps its aria-label. */}
+      <span className="hidden items-baseline gap-2 min-[420px]:flex">
         <span className="text-[0.9375rem] font-semibold tracking-[-0.01em]">FirstDayFirstShow</span>
         <span className="hidden font-mono text-xs text-muted sm:inline">FDFS</span>
       </span>
@@ -52,7 +53,7 @@ function Readiness() {
   }[state];
   return (
     <span
-      className="hidden items-center gap-2 text-xs text-muted md:inline-flex"
+      className="hidden items-center gap-2 text-xs whitespace-nowrap text-muted lg:inline-flex"
       title={meta.title}
       role="status"
     >
@@ -69,7 +70,7 @@ function NavItem({ to, children }: { to: string; children: ReactNode }) {
       end={false}
       className={({ isActive }) =>
         cx(
-          "rounded-md px-2.5 py-1.5 text-sm transition-colors duration-150",
+          "rounded-md px-2.5 py-1.5 text-sm whitespace-nowrap transition-colors duration-150",
           isActive ? "bg-surface-2 text-ink" : "text-muted hover:text-ink",
         )
       }
@@ -96,13 +97,19 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Wordmark />
           <nav aria-label="Main" className="ml-2 flex items-center gap-1">
             <NavItem to="/shows">Shows</NavItem>
+            {session && (
+              <NavItem to="/bookings">
+                <span className="sm:hidden">Bookings</span>
+                <span className="hidden sm:inline">My bookings</span>
+              </NavItem>
+            )}
           </nav>
           <div className="ml-auto flex items-center gap-4">
             <Readiness />
             {session ? (
               <div className="flex items-center gap-2">
-                <span className="hidden text-sm text-ink-2 sm:inline">
-                  <span className="text-muted">Signed in as </span>
+                <span className="hidden text-sm whitespace-nowrap text-ink-2 sm:inline">
+                  <span className="hidden text-muted lg:inline">Signed in as </span>
                   <span className="font-medium text-ink">{session.userId}</span>
                 </span>
                 <Button

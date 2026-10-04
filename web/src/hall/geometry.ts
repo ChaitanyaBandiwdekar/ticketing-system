@@ -115,6 +115,37 @@ function grid(labels: readonly string[]): HallGeometry {
   return { seats, rows: [], width: cols, height, byLabel: new Map(), bySeat: [], mode: "grid" };
 }
 
+export type Direction = "left" | "right" | "up" | "down";
+
+/**
+ * Where an arrow key moves from seat `index`: left/right stay on the same line (across aisles),
+ * up/down go to the nearest line in that direction and the seat closest in x. Null at an edge.
+ */
+export function neighbor(geo: HallGeometry, index: number, dir: Direction): number | null {
+  const from = geo.bySeat[index];
+  if (!from) return null;
+  let best: number | null = null;
+  let bestScore = Infinity;
+  for (const s of geo.seats) {
+    const dx = s.x - from.x;
+    const dy = s.y - from.y;
+    let score: number;
+    if (dir === "left" || dir === "right") {
+      if (dy !== 0 || (dir === "left" ? dx >= 0 : dx <= 0)) continue;
+      score = Math.abs(dx);
+    } else {
+      if (dir === "up" ? dy >= 0 : dy <= 0) continue;
+      // Nearest line first, then the closest seat on it.
+      score = Math.abs(dy) * 1e6 + Math.abs(dx);
+    }
+    if (score < bestScore) {
+      bestScore = score;
+      best = s.index;
+    }
+  }
+  return best;
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const n = Math.max(1, Math.floor(size));
   const out: T[][] = [];

@@ -4,6 +4,7 @@ import { AppShell } from "../components/AppShell";
 import { buttonClass } from "../components/ui";
 import { ApiError } from "../lib/api";
 import { SessionProvider } from "../lib/session";
+import { BookingsPage } from "../pages/BookingsPage";
 import { LoginPage } from "../pages/LoginPage";
 import { NewShowPage } from "../pages/NewShowPage";
 import { ShowPage } from "../pages/ShowPage";
@@ -45,6 +46,7 @@ export function App() {
               <Route path="shows" element={<ShowsPage />} />
               <Route path="shows/new" element={<NewShowPage />} />
               <Route path="shows/:id" element={<ShowPage />} />
+              <Route path="bookings" element={<BookingsPage />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </AppShell>

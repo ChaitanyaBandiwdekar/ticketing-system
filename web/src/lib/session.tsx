@@ -1,6 +1,10 @@
 /**
- * Who is using the UI: a demo-login user token (localStorage, so it survives reloads) and,
- * separately, an admin key for creating shows (sessionStorage only: gone when the tab closes).
+ * Who is using the UI: a demo-login user token and, separately, an admin key for creating shows
+ * (sessionStorage only: gone when the tab closes).
+ *
+ * The user session is per tab: each tab keeps its own in sessionStorage, and localStorage holds
+ * the last sign-in as the default for new tabs. So two tabs can be two people racing for one seat,
+ * and signing in as someone else in one tab never swaps identity under the other.
  */
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import { post, type Session } from "./api";
@@ -8,15 +12,31 @@ import { post, type Session } from "./api";
 const SESSION_KEY = "fdfs.session";
 const ADMIN_KEY = "fdfs.admin";
 
-function readSession(): Session | null {
+function parseSession(raw: string | null): Session | null {
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
     const s = JSON.parse(raw) as Session;
     return typeof s.token === "string" && s.expiresAt > Date.now() + 60_000 ? s : null;
   } catch {
     return null;
   }
+}
+
+function readStored(storage: () => Storage): Session | null {
+  try {
+    return parseSession(storage().getItem(SESSION_KEY));
+  } catch {
+    return null;
+  }
+}
+
+/** This tab's session, else the last sign-in (which this tab then adopts as its own). */
+function readSession(): Session | null {
+  const own = readStored(() => sessionStorage);
+  if (own) return own;
+  const last = readStored(() => localStorage);
+  if (last) store(SESSION_KEY, JSON.stringify(last), () => sessionStorage);
+  return last;
 }
 
 function store(key: string, value: string | null, storage: () => Storage): void {
@@ -57,12 +77,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       userId: res.user_id,
       expiresAt: Date.now() + res.expires_in * 1000,
     };
+    store(SESSION_KEY, JSON.stringify(s), () => sessionStorage);
     store(SESSION_KEY, JSON.stringify(s), () => localStorage);
     setSession(s);
     return s;
   }, []);
 
   const signOut = useCallback(() => {
+    store(SESSION_KEY, null, () => sessionStorage);
     store(SESSION_KEY, null, () => localStorage);
     setSession(null);
   }, []);
