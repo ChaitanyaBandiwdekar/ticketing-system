@@ -189,6 +189,7 @@ Plus the classics, all covered:
   - **`MAX_QUEUE` 8,000** (was 20,000). Each request in flight costs ~17.5 KB of RSS (measured at 4,000 in flight), so 20k could approach 512 MB.
   - **Adaptive `Retry-After` on 429:** requests in flight over the recent completion rate, 1–30s. A fixed 1s invited a retry storm that starved admitted requests.
   - **The DB deadline decides one loop turn after its timer.** A saturated event loop runs due timers before it polls I/O, so an answered query could become a 503.
+  - **The deadline is for a silent database, not a busy one.** If the database answered any other request-path call within the window, the call keeps waiting (cap: 6 deadlines). A cold pool reconnecting on a starved CPU had produced 503s in CI while the database was answering everyone else.
   - Logging measured at ~9 µs a line: one info line per request stays. DB pool 20 stays: at 0.1 CPU the process is CPU-bound, not pool-bound.
 
 ## 4. API contract

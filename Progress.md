@@ -554,7 +554,7 @@ The previous session ended after Phase 7's commits; nothing of Phase 8 had been 
 **Verification**
 
 - `npm run typecheck` ✅ · `npm run lint` ✅ · `npm run format:check` ✅ · `npm run build` ✅
-- `npm test` ✅: 27 files, 305 tests (+10 since the chart follow-up)
+- `npm test` ✅: 27 files, 308 tests (+13 since the chart follow-up)
   - `test/burst/burst.test.ts`: a scaled run of every scenario against the real app over HTTP passes every check, including the metrics diff. Against a fake server that grants everything, exactly the checks it breaks fail. Plus the seat plan, the Zipf sampler, quantiles and the metrics parser.
   - `Retry-After` follows in-flight ÷ completion rate and forgets an old rate.
   - The deadline race, reproduced with a real socket: the reply lands, the loop stays busy past the deadline, and the call must still resolve. It fails without the fix.
@@ -567,6 +567,12 @@ The previous session ended after Phase 7's commits; nothing of Phase 8 had been 
 **Found and fixed**
 
 - **Overload turned into 503s.** A 429 retry storm starved the admitted requests, and a due deadline timer ran before the poll that would have delivered their answers. Fixed by the adaptive `Retry-After` and by the deadline deciding after the poll.
+- **Found by CI's throttled burst** (the image behind PgBouncer, after the fail-closed step had dropped the pool):
+  - 5 of 21,555 requests got 503 `db_unavailable` while every other check passed. The first wave hit a cold pool: 20 connections re-authenticated (SCRAM) on a starved CPU, and a few queued calls passed the 10s deadline while the database was answering everyone else. PgBouncer logged no waits.
+  - The deadline now consults `DbProgress` (when the database last answered a request-path call). It keeps waiting while the database answers others, up to 6 deadlines (60s), and still fails at 10s when nothing has answered lately: a dead database behind a pooler.
+  - This matters in production too: `idle_timeout` closes idle connections after 30s, so a stampede after any lull starts from a cold pool.
+  - Tests: a busy database (others answering) lets a slow call finish, a silent one fails at the deadline, and the cap holds.
+- **The image build missed the shared engine:** the simulator imports `scripts/burst/core.ts`, which the Dockerfile didn't copy. Reproduced with the build stage's exact file set and fixed.
 - **The 2,000-connection accept-queue overflow** (listen backlog).
 - **The young-generation squeeze** from the heap cap.
 - In the burst itself:

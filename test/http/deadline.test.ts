@@ -1,7 +1,12 @@
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../../server/src/config";
-import { DbDeadlineError, withDeadline } from "../../server/src/db/deadline";
+import {
+  DEADLINE_CAP_FACTOR,
+  DbDeadlineError,
+  DbProgress,
+  withDeadline,
+} from "../../server/src/db/deadline";
 import { createSql } from "../../server/src/db/pool";
 import { buildApp } from "../../server/src/http/app";
 import { toApiError } from "../../server/src/http/errors";
@@ -53,6 +58,44 @@ describe("withDeadline", () => {
     } finally {
       client.destroy();
       await new Promise((r) => echo.close(r));
+    }
+  });
+
+  it("keeps waiting while the database answers other calls (busy, not gone)", async () => {
+    const progress = new DbProgress();
+    const others = setInterval(() => progress.mark(), 5);
+    try {
+      const slow = new Promise<string>((r) => setTimeout(() => r("answered"), 70));
+      const t0 = performance.now();
+      await expect(withDeadline(slow, 20, progress)).resolves.toBe("answered");
+      expect(performance.now() - t0).toBeGreaterThanOrEqual(60);
+    } finally {
+      clearInterval(others);
+    }
+  });
+
+  it("still fails at the deadline when the database has answered nothing lately", async () => {
+    const progress = new DbProgress();
+    progress.mark(); // an answer long before this call...
+    await new Promise((r) => setTimeout(r, 40)); // ...then silence
+    const t0 = performance.now();
+    const err = await withDeadline(new Promise<never>(() => {}), 20, progress).catch((e) => e);
+    expect(err).toBeInstanceOf(DbDeadlineError);
+    expect(performance.now() - t0).toBeLessThan(20 * 3);
+  });
+
+  it("gives up at the cap even while the database answers others", async () => {
+    const progress = new DbProgress();
+    const others = setInterval(() => progress.mark(), 5);
+    try {
+      const t0 = performance.now();
+      const err = await withDeadline(new Promise<never>(() => {}), 10, progress).catch((e) => e);
+      expect(err).toBeInstanceOf(DbDeadlineError);
+      const waited = performance.now() - t0;
+      expect(waited).toBeGreaterThanOrEqual(10 * DEADLINE_CAP_FACTOR - 5);
+      expect(waited).toBeLessThan(10 * DEADLINE_CAP_FACTOR + 100);
+    } finally {
+      clearInterval(others);
     }
   });
 
