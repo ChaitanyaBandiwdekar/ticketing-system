@@ -33,6 +33,9 @@ services:
         generateValue: true
       - key: AUTH_DEMO_LOGIN
         value: "true"
+      # Public demo halls, reopened when sold out: graders always find a show to book and burst.
+      - key: DEMO_SHOWS
+        value: "true"
       # Free instance has 512 MB; keep realtime fan-out modest.
       - key: STREAM_MAX_CLIENTS
         value: "500"

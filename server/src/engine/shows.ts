@@ -1,5 +1,5 @@
 /** Show creation and the one-snapshot read that the seat map and the invariant badge rely on. */
-import type { Sql } from "../db/pool";
+import type { Sql, Tx } from "../db/pool";
 import { isUuid } from "./ids";
 import type { SeatCounts, SeatStatus, Show, ShowLayout, ShowSnapshot } from "./types";
 
@@ -87,35 +87,37 @@ export async function createShow(
 ): Promise<Show> {
   const issues = validateShowInput(input, opts.maxSeatsPerShow);
   if (issues.length > 0) throw new ShowValidationError(issues);
+  return sql.begin((tx) => insertShow(tx, input));
+}
 
-  return sql.begin(async (tx) => {
-    const [show] = await tx.unsafe<Show[]>(
-      `insert into shows (name, price_paise, per_user_limit, hold_ttl_seconds, total_seats, ephemeral,
-                          layout)
-       values ($1, $2, $3, $4, $5, $6, $7)
-       returning ${SHOW_COLUMNS}`,
-      [
-        input.name.trim(),
-        input.pricePaise,
-        input.perUserLimit,
-        input.holdTtlSeconds ?? null,
-        input.seats.length,
-        input.ephemeral ?? false,
-        input.layout
-          ? tx.json({
-              aisles_after: [...new Set(input.layout.aisles_after)].sort((a, b) => a - b),
-              row_gaps_after: [...new Set(input.layout.row_gaps_after)],
-            })
-          : null,
-      ],
-    );
-    await tx`
-      insert into seats (show_id, label)
-      select ${show!.id}::uuid, label
-        from unnest(${input.seats}::text[]) with ordinality as t(label, ord)
-       order by ord`;
-    return normalizeShow(show!);
-  });
+/** The inserts behind createShow, inside a caller's transaction. The input must be validated. */
+export async function insertShow(tx: Tx, input: CreateShowInput): Promise<Show> {
+  const [show] = await tx.unsafe<Show[]>(
+    `insert into shows (name, price_paise, per_user_limit, hold_ttl_seconds, total_seats, ephemeral,
+                        layout)
+     values ($1, $2, $3, $4, $5, $6, $7)
+     returning ${SHOW_COLUMNS}`,
+    [
+      input.name.trim(),
+      input.pricePaise,
+      input.perUserLimit,
+      input.holdTtlSeconds ?? null,
+      input.seats.length,
+      input.ephemeral ?? false,
+      input.layout
+        ? tx.json({
+            aisles_after: [...new Set(input.layout.aisles_after)].sort((a, b) => a - b),
+            row_gaps_after: [...new Set(input.layout.row_gaps_after)],
+          })
+        : null,
+    ],
+  );
+  await tx`
+    insert into seats (show_id, label)
+    select ${show!.id}::uuid, label
+      from unnest(${input.seats}::text[]) with ordinality as t(label, ord)
+     order by ord`;
+  return normalizeShow(show!);
 }
 
 /**

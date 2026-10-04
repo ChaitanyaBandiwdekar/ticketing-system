@@ -43,6 +43,9 @@ const EnvSchema = z.object({
   JANITOR_INTERVAL_MS: intWithDefault(600_000, 1_000, 86_400_000),
   EPHEMERAL_SHOW_TTL_HOURS: intWithDefault(24, 1, 24 * 365),
   IDEMPOTENCY_KEY_TTL_HOURS: intWithDefault(24, 1, 24 * 365),
+  // Keep public demo halls open (engine/demo.ts). On for the deploy, off for tests and local dev.
+  DEMO_SHOWS: z.stringbool().default(false),
+  DEMO_SHOWS_INTERVAL_MS: intWithDefault(60_000, 1_000, 3_600_000),
 });
 
 export type Config = {
@@ -69,6 +72,8 @@ export type Config = {
     janitorIntervalMs: number;
     ephemeralShowTtlHours: number;
     idempotencyKeyTtlHours: number;
+    /** 0 = off: no demo shows are opened. */
+    demoShowsIntervalMs: number;
   };
 };
 
@@ -120,6 +125,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       janitorIntervalMs: e.JANITOR_INTERVAL_MS,
       ephemeralShowTtlHours: e.EPHEMERAL_SHOW_TTL_HOURS,
       idempotencyKeyTtlHours: e.IDEMPOTENCY_KEY_TTL_HOURS,
+      demoShowsIntervalMs: e.DEMO_SHOWS ? e.DEMO_SHOWS_INTERVAL_MS : 0,
     },
   };
 }

@@ -1,6 +1,8 @@
 import postgres from "postgres";
 
 export type Sql = postgres.Sql;
+/** The handle inside sql.begin(): statements on it run in that transaction. */
+export type Tx = postgres.TransactionSql;
 
 export type PoolOptions = {
   /** Max connections this pool opens. Keep the sum across pools under the pooler's client limit. */

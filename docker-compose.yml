@@ -49,6 +49,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-local-dev-jwt-secret-change-me-0123456789}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-local-dev-admin-key}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      DEMO_SHOWS: ${DEMO_SHOWS:-true}
     depends_on:
       db: { condition: service_healthy }
       # Pool connections are opened lazily, and migrations go straight to db, so "started" is enough.

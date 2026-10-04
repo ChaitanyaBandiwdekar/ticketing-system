@@ -34,6 +34,7 @@ describe("loadConfig", () => {
       janitorIntervalMs: 600_000,
       ephemeralShowTtlHours: 24,
       idempotencyKeyTtlHours: 24,
+      demoShowsIntervalMs: 0,
     });
   });
 
@@ -42,6 +43,17 @@ describe("loadConfig", () => {
     expect(c.port).toBe(10000);
     expect(c.db.poolMax).toBe(15);
     expect(c.auth.demoLogin).toBe(false);
+  });
+
+  it("runs the demo shows job only when DEMO_SHOWS is on", () => {
+    expect(loadConfig({ ...valid, DEMO_SHOWS: "true" }).jobs.demoShowsIntervalMs).toBe(60_000);
+    expect(
+      loadConfig({ ...valid, DEMO_SHOWS: "true", DEMO_SHOWS_INTERVAL_MS: "5000" }).jobs
+        .demoShowsIntervalMs,
+    ).toBe(5_000);
+    expect(loadConfig({ ...valid, DEMO_SHOWS_INTERVAL_MS: "5000" }).jobs.demoShowsIntervalMs).toBe(
+      0,
+    );
   });
 
   it("uses the session URL for migrations when given", () => {

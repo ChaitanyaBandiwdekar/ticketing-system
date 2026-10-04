@@ -5,6 +5,7 @@ import type { Metrics } from "../obs/metrics";
 import type { OpsHub } from "../obs/opshub";
 import type { EventBus } from "../realtime/bus";
 import type { HubLog, StreamHub } from "../realtime/hub";
+import { createDemoShows } from "./demo";
 import { createJanitor } from "./janitor";
 import { Periodic } from "./periodic";
 import { createReconciler } from "./reconciler";
@@ -40,6 +41,16 @@ export function createJobs(deps: {
     new Periodic("reconciler", config.jobs.reconcileIntervalMs, reconciler.tick, log),
     new Periodic("janitor", config.jobs.janitorIntervalMs, janitor.tick, log),
   ];
+  const demo =
+    config.jobs.demoShowsIntervalMs > 0
+      ? new Periodic(
+          "demo_shows",
+          config.jobs.demoShowsIntervalMs,
+          createDemoShows(sql, { maxSeatsPerShow: config.reservations.maxSeatsPerShow }, log).tick,
+          log,
+        )
+      : null;
+  if (demo) runners.push(demo);
 
   if (obs) {
     const audits = () => reconciler.latest.values();
@@ -55,6 +66,8 @@ export function createJobs(deps: {
     runners,
     start(): void {
       for (const r of runners) r.start();
+      // Open the demo halls at boot, not a minute later: a cold-started deploy is never empty.
+      void demo?.runOnce();
     },
     /** Waits for in-flight ticks, so pools are never ended under a running job. */
     async stop(): Promise<void> {
