@@ -412,6 +412,20 @@ describe("burst runs", () => {
     expect((await post(body, user.headers)).statusCode).toBe(403);
   });
 
+  it("records a report that still carries the show's whole seat list", async () => {
+    const show = await t.show();
+    // What a burst built before the report was slimmed sends: POST /shows' answer, every seat.
+    const seats = Array.from({ length: 2000 }, (_, i) => ({ label: `R${i}`, status: "available" }));
+    const res = await post(
+      report(
+        { id: show.id, name: String(show.name) },
+        { show: { id: show.id, name: String(show.name), total_seats: 20, seats } },
+      ),
+    );
+    expect(res.statusCode).toBe(201);
+    expect(res.json<{ report: { show: object } }>().report.show).not.toHaveProperty("seats");
+  });
+
   it("stores the report with the server's own audit, keeps only rendered fields, and lists newest first", async () => {
     const show = await t.show();
     const first = await post(

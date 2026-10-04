@@ -567,7 +567,10 @@ export async function runBurst(
         (created.status === 401 || created.status === 403 ? " (check the admin key)" : ""),
     );
   }
-  const show = created.body as { id: string; name: string; total_seats: number };
+  // POST /shows answers with every seat; keep only what the report needs, or a 2,000-seat hall
+  // alone pushes the report past POST /ops/runs' 64 KB limit and the War Room never sees it.
+  const made = created.body as { id: string; name: string; total_seats: number };
+  const show = { id: made.id, name: made.name, total_seats: made.total_seats };
   o.onShow?.(show);
   const showPath = `/shows/${show.id}`;
 
