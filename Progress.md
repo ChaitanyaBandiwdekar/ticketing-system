@@ -560,6 +560,7 @@ The previous session ended after Phase 7's commits; nothing of Phase 8 had been 
   - The deadline race, reproduced with a real socket: the reply lands, the loop stays busy past the deadline, and the call must still resolve. It fails without the fix.
 - **`npm run burst -- http://localhost:8080`, unthrottled:** 21,550 reserve requests in 19s (1,119 req/s), p99 472ms, 0 5xx, all 16 checks green, metrics equal on all 5 outcomes.
 - **The same, throttled to 0.1 CPU / 512 MB, after tuning:** 21,550 requests in 118s (**182 req/s**), p50 1.19s, p99 3.10s, **0 5xx, 0 network errors**, 69 balanced snapshots, all checks green. Before tuning the same setup managed ~90–100 req/s, with p99 10–20s.
+- **CI, the Docker image throttled to 0.1 CPU / 512 MB, through PgBouncer:** 21,550 requests in 206s (105 req/s, the CI runner's slower CPU), p50 2.1s, p99 6.1s, **0 5xx, 0 network errors**, every check green, metrics equal on all 5 outcomes, not OOM-killed. Fail-closed and the SIGTERM drain then pass while still throttled.
 - **2,000 and 4,000 in flight, throttled:** 0 5xx, 0 network errors, all checks green; peak RSS 150 / 172 MB.
 - **Overload (`MAX_QUEUE=500`, 2,000 in flight, throttled):** before the two fixes, 770 503s among admitted requests, and seats sold that the client never learned of (it didn't retry 503s yet). After: **0 5xx**, 687 shed with 429 and retried, every guarantee held.
 - **Simulator** in Chromium at 1280×900 and 375×812: 3,540 requests from the browser at ~500 req/s, the hall filling live, 16/16 checks passed, no horizontal scroll.
