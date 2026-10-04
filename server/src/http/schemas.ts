@@ -46,6 +46,16 @@ export const countsSchema = {
   },
 } as const;
 
+/** One seat of a show's map, as GET /shows/:id and the POST /shows reply list it. */
+export const seatSchema = {
+  type: "object",
+  required: ["label", "status"],
+  properties: {
+    label: { type: "string" },
+    status: { type: "string", enum: ["available", "held", "confirmed"] },
+  },
+} as const;
+
 export const showProperties = {
   id: { type: "string" },
   name: { type: "string" },
