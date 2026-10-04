@@ -20,7 +20,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:migrate": "tsx server/src/db/migrate-cli.ts"
+    "db:migrate": "tsx server/src/db/migrate-cli.ts",
+    "burst": "tsx scripts/burst/burst.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.5",
